@@ -118,6 +118,12 @@ Player count:
 - **More than that**, or in director mode "repeat senses, average inputs": senses repeat and
   the server averages the inputs of everyone sharing a role.
 
+Every sense (played or simulated) also shows up as a small swarm of "thoughts" around
+Dargato that moves with its input: rings open with VISION's brightness, a stream pours
+toward DIRECTION's side, sparks jump at his paws with INSTINCT, EMOTION settles into a halo
+(calm), drifts ahead (curious) or huddles (wary), HEARING widens rings, MEMORY sends up red
+embers. Taps, beats, knocks and flinches make a swarm flare.
+
 Players can join mid-journey. Every player also gets a small secret wish (for example
 "Make Dargato go down a narrow alley"), which can conflict with the shared goal.
 
@@ -166,7 +172,7 @@ server/   index (HTTP + Socket.IO), session (lifecycle, aggregation, director),
           players (input normalization, rate limits, simulated senses), cat (behaviour),
           routeChoice (junction scoring), hints, narrative (environmental events), objectives
 src/display  R3F scene: cityLayout (buildings around the graph), WorldMesh, CatFigure,
-             Home, Signs (hints/events), Scene (camera, fog, light, debug), audio (WebAudio)
+             Home, Signs (hints/events), Thoughts (sense particles), Scene (camera, fog, light, debug), audio (WebAudio)
 src/phone    PhoneApp, controls (one per sense), sensors (camera/mic/tilt, local only)
 src/director DirectorApp, MapView
 src/debug    DebugApp

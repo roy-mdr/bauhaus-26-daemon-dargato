@@ -11,6 +11,7 @@ import { Home } from './Home';
 import { Atmosphere, CameraRig, Dargato, DebugOverlay } from './Scene';
 import { Events, Hints } from './Signs';
 import { pushSnapshot, serverNow, store } from './store';
+import { Thoughts } from './Thoughts';
 import { WorldMesh } from './WorldMesh';
 
 const audio = new DisplayAudio();
@@ -181,6 +182,7 @@ export default function DisplayApp() {
           <Hints world={world} />
           <Events />
           <Dargato />
+          <Thoughts />
           <CameraRig />
           <DebugOverlay world={world} />
           <AudioPump />

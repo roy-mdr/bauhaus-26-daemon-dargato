@@ -22,6 +22,12 @@ export interface Outbox {
 }
 
 export const TICK_HZ = 30;
+
+function roundChannels(p: Player): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(playerChannels(p))) out[k] = Math.round(v * 100) / 100;
+  return out;
+}
 const DT = 1 / TICK_HZ;
 
 interface Sim {
@@ -157,7 +163,7 @@ export class Session {
     this.extension = 0;
     if (this.config.reshuffleRoles && !keepSeed) this.reshuffleRoles();
     for (const p of this.players.values()) {
-      p.stats = { inputs: 0, decisive: 0, memories: 0 };
+      p.stats = { inputs: 0, decisive: 0, memories: 0, pulses: p.stats.pulses };
       this.objectives.assign(p, this.rng);
     }
     this.generate(seed);
@@ -607,6 +613,8 @@ export class Session {
         lastInputAgo: p.lastInputAt ? Math.round((this.now - p.lastInputAt) / 100) / 10 : -1,
         objective: this.objectives.view(p),
         influence: p.influence,
+        ch: roundChannels(p),
+        pulses: p.stats.pulses,
       });
     }
     for (const [sense, sim] of this.sims) {
@@ -620,6 +628,8 @@ export class Session {
         sim: true,
         level: playerLevel(sim.player),
         influence: sim.player.influence,
+        ch: roundChannels(sim.player),
+        pulses: sim.player.stats.pulses,
       });
     }
     return list;

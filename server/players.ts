@@ -42,7 +42,7 @@ export interface Player {
   sensor?: SensorStatus;
   sense: SenseState;
   objective: { id: ObjectiveId; progress: number; done: boolean; failed: boolean };
-  stats: { inputs: number; decisive: number; memories: number };
+  stats: { inputs: number; decisive: number; memories: number; pulses: number };
   joinOrder: number;
 }
 
@@ -84,7 +84,7 @@ export function createPlayer(nickname: string, kind: PlayerKind, role: RoleRef):
     influence: 1,
     sense: newSenseState(role.sense),
     objective: { id: 'reveal-hints', progress: 0, done: false, failed: false },
-    stats: { inputs: 0, decisive: 0, memories: 0 },
+    stats: { inputs: 0, decisive: 0, memories: 0, pulses: 0 },
     joinOrder: joinCounter++,
   };
 }
@@ -183,6 +183,8 @@ export function applyInput(p: Player, input: PhoneInput, now: number): boolean {
   }
   p.lastInputAt = now;
   p.stats.inputs++;
+  // discrete gestures (not continuous values), so the display can make them visible
+  if (input.t !== 'value') p.stats.pulses++;
   return true;
 }
 

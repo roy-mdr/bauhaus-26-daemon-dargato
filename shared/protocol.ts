@@ -33,6 +33,10 @@ export interface PlayerPublic {
   lastInputAgo?: number;
   objective?: { text: string; progress: number; target: number; done: boolean };
   influence: number;
+  /** current output channels (rounded), e.g. { calm, curiosity, caution } */
+  ch: Record<string, number>;
+  /** running count of discrete gestures (taps, beats, knocks, flinches, holds) */
+  pulses: number;
 }
 
 export interface CatSnapshot {
