@@ -13,7 +13,6 @@ export function MapView({ world, state, onNode }: { world: World; state: Directo
     [world],
   );
   const planned = new Set(state?.planned ?? []);
-  const options = new Map((state?.options ?? []).map((o, i) => [o.edgeId, { o, i }]));
   const cat = state?.cat;
   return (
     <svg className="map" viewBox={vb} preserveAspectRatio="xMidYMid meet">
@@ -25,12 +24,6 @@ export function MapView({ world, state, onNode }: { world: World; state: Directo
         .map((e) => (
           <path key={'p' + e.id} d={e.d} stroke="#c3221c" strokeWidth={1.2} fill="none" strokeDasharray="3 2" />
         ))}
-      {edgePaths
-        .filter((e) => options.has(e.id))
-        .map((e) => {
-          const { i } = options.get(e.id)!;
-          return <path key={'o' + e.id} d={e.d} stroke={i === 0 ? '#1f6fd1' : '#7aa7e0'} strokeWidth={i === 0 ? 2 : 1} fill="none" opacity={0.9} />;
-        })}
       {world.nodes.map((n) => (
         <g key={n.id} onClick={() => onNode?.(n.id)} style={{ cursor: onNode ? 'pointer' : 'default' }}>
           <circle cx={n.x} cy={n.z} r={n.id === world.home ? n.r : n.kind === 'plaza' ? n.r * 0.8 : 1.6} fill={n.id === world.home ? '#c3221c' : n.id === world.start ? '#1d1d1d' : n.discovery ? '#d9a33c' : n.kind === 'plaza' ? '#cfcdc7' : '#55534f'} opacity={n.kind === 'plaza' ? 0.6 : 1} />

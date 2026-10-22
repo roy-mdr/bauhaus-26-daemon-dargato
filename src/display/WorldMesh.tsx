@@ -1,5 +1,7 @@
 // Builds the visible town around the navigation graph: not pavement and facades,
-// but floating solids where the buildings would be, and particle paths for streets.
+// but abstract solids where the buildings would be, and particle paths for streets.
+// While MEMORY holds, the solids rest on the ground; as it fades they lift, come apart
+// and drift.
 import { useFrame } from '@react-three/fiber';
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
@@ -15,11 +17,17 @@ import { StreetParticles } from './StreetParticles';
 type Shape = 'box' | 'cylinder' | 'prism' | 'sphere';
 const SHAPES: Shape[] = ['box', 'cylinder', 'prism', 'sphere'];
 
-/** one floating solid; y is the bottom at rest */
+/** one solid; gy is its bottom when grounded, y when afloat */
 interface Piece {
   x: number;
   z: number;
+  gy: number;
   y: number;
+  /** where it drifts when the memory is gone */
+  dx: number;
+  dy: number;
+  dz: number;
+  tumble: number;
   sx: number;
   sy: number;
   sz: number;
@@ -47,7 +55,20 @@ const buildingColor = (shade: number) => PAL.buildings[Math.min(PAL.buildings.le
 function buildPieces(world: World, layout: CityLayout): Record<Shape, Piece[]> {
   const rng = new Rng('abstract:' + world.seed);
   const out: Record<Shape, Piece[]> = { box: [], cylinder: [], prism: [], sphere: [] };
-  const motion = (amp: number) => ({ phase: rng.range(0, Math.PI * 2), amp, speed: rng.range(0.22, 0.55), sway: rng.chance(0.4) ? rng.range(0.01, 0.05) : 0 });
+  const motion = (amp: number) => {
+    const a = rng.range(0, Math.PI * 2);
+    const r = rng.range(0.5, 3);
+    return {
+      phase: rng.range(0, Math.PI * 2),
+      amp,
+      speed: rng.range(0.22, 0.55),
+      sway: rng.chance(0.4) ? rng.range(0.01, 0.05) : 0,
+      dx: Math.sin(a) * r,
+      dy: rng.range(2, 9),
+      dz: Math.cos(a) * r,
+      tumble: rng.range(-0.6, 0.6),
+    };
+  };
 
   for (const b of layout.buildings) {
     const r = rng.next();
@@ -56,13 +77,14 @@ function buildPieces(world: World, layout: CityLayout): Record<Shape, Piece[]> {
     const lift = rng.range(1.2, 4.2);
     if (shape === 'sphere') {
       const d = Math.min(b.sx, b.sz) * shrink;
-      out.sphere.push({ x: b.x, z: b.z, y: lift, sx: d, sy: d, sz: d, rot: b.rot, color: buildingColor(b.shade), ...motion(rng.range(0.15, 0.4)) });
+      out.sphere.push({ x: b.x, z: b.z, gy: 0, y: lift, sx: d, sy: d, sz: d, rot: b.rot, color: buildingColor(b.shade), ...motion(rng.range(0.15, 0.4)) });
       continue;
     }
     // tall buildings break into a few stacked pieces with air between them
     const total = b.sy * rng.range(0.55, 0.95);
     const parts = total > 11 ? rng.int(1, 3) : total > 5 ? rng.int(1, 2) : 1;
     let y = lift;
+    let gy = 0;
     for (let i = 0; i < parts; i++) {
       const h = (total / parts) * rng.range(0.7, 1.15);
       const k = i === 0 ? 1 : rng.range(0.7, 1);
@@ -72,6 +94,7 @@ function buildPieces(world: World, layout: CityLayout): Record<Shape, Piece[]> {
       out[s].push({
         x: b.x,
         z: b.z,
+        gy,
         y,
         sx: (round ? d : b.sx) * shrink * k,
         sy: h,
@@ -81,14 +104,15 @@ function buildPieces(world: World, layout: CityLayout): Record<Shape, Piece[]> {
         ...motion(rng.range(0.08, 0.2) * (i + 1)),
       });
       y += h + rng.range(0.9, 2.4);
+      gy += h;
     }
   }
   // walls along alleys and benches on squares become thin floating plates
   for (const f of layout.fences) {
-    out.box.push({ x: f.x, z: f.z, y: rng.range(0.35, 0.8), sx: 0.12, sy: f.sy * 0.8, sz: f.sz * 0.9, rot: f.rot, color: PAL.wall, ...motion(rng.range(0.05, 0.12)) });
+    out.box.push({ x: f.x, z: f.z, gy: 0, y: rng.range(0.35, 0.8), sx: 0.12, sy: f.sy * 0.8, sz: f.sz * 0.9, rot: f.rot, color: PAL.wall, ...motion(rng.range(0.05, 0.12)) });
   }
   for (const bn of layout.benches) {
-    out.box.push({ x: bn.x, z: bn.z, y: rng.range(0.5, 0.9), sx: 1.8, sy: 0.08, sz: 0.45, rot: bn.rot + Math.PI / 2, color: PAL.charcoal, ...motion(0.06) });
+    out.box.push({ x: bn.x, z: bn.z, gy: 0.4, y: rng.range(0.5, 0.9), sx: 1.8, sy: 0.08, sz: 0.45, rot: bn.rot + Math.PI / 2, color: PAL.charcoal, ...motion(0.06) });
   }
   return out;
 }
@@ -103,15 +127,19 @@ function FloatingSet({ shape, pieces }: { shape: Shape; pieces: Piece[] }) {
     pieces.forEach((pc, i) => m.setColorAt(i, c.set(pc.color)));
     if (m.instanceColor) m.instanceColor.needsUpdate = true;
   }, [pieces]);
-  // slow, independent bobbing: the town breathes
+  // grounded while he remembers; afloat, bobbing and drifting apart as he forgets
   useFrame((state) => {
     const m = ref.current;
     if (!m) return;
     const t = state.clock.elapsedTime;
+    const d = store.fx.disperse;
+    const lift = Math.min(1, d * 1.6);
+    const far = d * d;
     pieces.forEach((pc, i) => {
       const w = t * pc.speed + pc.phase;
-      tmp.p.set(pc.x, pc.y + pc.sy / 2 + Math.sin(w) * pc.amp, pc.z);
-      tmp.e.set(Math.sin(w * 0.7) * pc.sway, pc.rot + Math.sin(w * 0.5) * pc.sway, Math.cos(w * 0.6) * pc.sway);
+      const sway = pc.sway * lift + pc.tumble * far;
+      tmp.p.set(pc.x + pc.dx * far, pc.gy + (pc.y - pc.gy) * lift + pc.dy * far + pc.sy / 2 + Math.sin(w) * pc.amp * lift, pc.z + pc.dz * far);
+      tmp.e.set(Math.sin(w * 0.7) * sway, pc.rot + Math.sin(w * 0.5) * sway, Math.cos(w * 0.6) * sway);
       tmp.q.setFromEuler(tmp.e);
       tmp.m.compose(tmp.p, tmp.q, tmp.s.set(pc.sx, pc.sy, pc.sz));
       m.setMatrixAt(i, tmp.m);
@@ -163,14 +191,13 @@ function Lamps({ layout }: { layout: CityLayout }) {
   const tmp = useMemo(() => ({ m: new THREE.Matrix4(), q: new THREE.Quaternion(), p: new THREE.Vector3(), s: new THREE.Vector3(0.22, 0.22, 0.22), up: new THREE.Vector3(0, 1, 0) }), []);
   useFrame((state) => {
     const t = state.clock.elapsedTime;
-    const hb = store.latest?.inner.heartbeat ?? 0;
-    const beat = Math.pow(Math.max(0, Math.sin(t * Math.PI * 2 * 1.1)), 8);
-    mat.emissiveIntensity = 0.08 + hb * (0.25 + beat * 0.6);
+    const fx = store.fx;
+    mat.emissiveIntensity = 0.1 + fx.beat * (0.2 + 0.5 * fx.steady);
     const m = ref.current;
     if (!m) return;
     lamps.forEach((l, i) => {
       tmp.q.setFromAxisAngle(tmp.up, l.rot + t * 0.2 + l.phase);
-      tmp.p.set(l.x, l.y + Math.sin(t * 0.5 + l.phase) * 0.12, l.z);
+      tmp.p.set(l.x, l.y + Math.sin(t * 0.5 + l.phase) * 0.12 + fx.disperse * fx.disperse * 3, l.z);
       m.setMatrixAt(i, tmp.m.compose(tmp.p, tmp.q, tmp.s));
     });
     m.instanceMatrix.needsUpdate = true;

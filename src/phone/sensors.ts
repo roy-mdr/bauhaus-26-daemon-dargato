@@ -75,17 +75,11 @@ export class MicListener {
   private buf = new Float32Array(1024);
   floorDb = -60;
   level = 0;
-  private avg = 0;
-  private lastOnset = 0;
-  private onsets: number[] = [];
-  private lastRhythm = 0;
+  /** dB of range above the room's floor that maps to full loudness (lower = more sensitive) */
+  rangeDb = 40;
   private calibrating = 0;
   private calSamples: number[] = [];
-  /** onset threshold above the running average (normalized), scaled by sensitivity */
-  threshold = 0.22;
   onLevel: (v: number) => void = () => {};
-  onOnset: (v: number) => void = () => {};
-  onRhythm: (bpm: number, reg: number) => void = () => {};
 
   async start(): Promise<SensorState> {
     if (!navigator.mediaDevices?.getUserMedia) return secureContext ? 'unsupported' : 'denied';
@@ -132,32 +126,10 @@ export class MicListener {
       this.floorDb = Math.min(-25, sorted[Math.floor(sorted.length * 0.7)] ?? -60);
       return;
     }
-    // ~40 dB of range above the room
-    const lv = clamp((db - this.floorDb - 3) / 40);
-    this.level += (lv - this.level) * 0.25;
-    this.avg += (lv - this.avg) * 0.02;
+    // loudness above the room; quick to rise, a little slower to fall
+    const lv = clamp((db - this.floorDb - 3) / this.rangeDb);
+    this.level += (lv - this.level) * (lv > this.level ? 0.3 : 0.08);
     this.onLevel(this.level);
-    if (lv - this.avg > this.threshold && now - this.lastOnset > 160) {
-      this.lastOnset = now;
-      this.onOnset(clamp(lv));
-      this.onsets.push(now);
-      this.onsets = this.onsets.filter((t) => now - t < 4000);
-      this.detectRhythm(now);
-    }
-  }
-
-  private detectRhythm(now: number) {
-    if (this.onsets.length < 4 || now - this.lastRhythm < 3000) return;
-    const ts = this.onsets.slice(-5);
-    const iv = ts.slice(1).map((t, i) => t - ts[i]);
-    if (iv.some((x) => x < 180 || x > 1300)) return;
-    const mean = iv.reduce((a, b) => a + b, 0) / iv.length;
-    const sd = Math.sqrt(iv.reduce((a, b) => a + (b - mean) ** 2, 0) / iv.length);
-    const cv = sd / mean;
-    if (cv < 0.25) {
-      this.lastRhythm = now;
-      this.onRhythm(60000 / mean, clamp(1 - cv * 3));
-    }
   }
 
   stop() {
@@ -218,6 +190,56 @@ export class TiltSensor {
 
   stop() {
     if (this.handler) window.removeEventListener('deviceorientation', this.handler);
+    this.handler = null;
+  }
+}
+
+// ---------------- shaking ----------------
+
+type IOSMotionEvent = typeof DeviceMotionEvent & { requestPermission?: () => Promise<'granted' | 'denied'> };
+
+/** how hard the phone is being shaken, 0..1 (acceleration without gravity) */
+export class ShakeSensor {
+  private handler: ((e: DeviceMotionEvent) => void) | null = null;
+  private got = false;
+  level = 0;
+  onValue: (v: number) => void = () => {};
+
+  async start(): Promise<SensorState> {
+    if (typeof DeviceMotionEvent === 'undefined') return 'unsupported';
+    const DME = DeviceMotionEvent as IOSMotionEvent;
+    if (typeof DME.requestPermission === 'function') {
+      try {
+        if ((await DME.requestPermission()) !== 'granted') return 'denied';
+      } catch {
+        return 'denied';
+      }
+    }
+    let last: { x: number; y: number; z: number } | null = null;
+    this.handler = (e) => {
+      // linear acceleration when available, otherwise the change of the gravity-included value
+      const a = e.acceleration;
+      let mag = 0;
+      if (a && a.x !== null) mag = Math.hypot(a.x ?? 0, a.y ?? 0, a.z ?? 0);
+      else if (e.accelerationIncludingGravity?.x != null) {
+        const g = e.accelerationIncludingGravity;
+        const cur = { x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 };
+        if (last) mag = Math.hypot(cur.x - last.x, cur.y - last.y, cur.z - last.z);
+        last = cur;
+      } else return;
+      this.got = true;
+      // a firm shake is ~15-25 m/s²; small hand tremor stays below ~2
+      const v = clamp((mag - 2) / 16);
+      this.level = Math.max(v, this.level * 0.9);
+      this.onValue(this.level);
+    };
+    window.addEventListener('devicemotion', this.handler);
+    await new Promise((r) => setTimeout(r, 1200));
+    return this.got ? 'active' : 'unsupported';
+  }
+
+  stop() {
+    if (this.handler) window.removeEventListener('devicemotion', this.handler);
     this.handler = null;
   }
 }

@@ -33,38 +33,32 @@ function bot(i: number, code: string) {
   socket.on('ping2', (t: number) => socket.emit('pong2', t));
   socket.on('kicked', (m: string) => console.log(`bot ${i + 1} kicked: ${m}`));
   let t = 0;
-  let hold = false;
+  let beatAt = 0;
   setInterval(() => {
     if (!state) return;
     t += 0.1;
-    const sense = state.role.sense;
-    switch (sense) {
-      case 'vision':
-        send({ t: 'value', v: 0.5 + 0.4 * Math.sin(t * 0.3 + i) });
+    switch (state.role.sense) {
+      case 'sight':
+        send({ t: 'value', v: 0.5 + 0.3 * Math.sin(t * 0.3 + i) });
         break;
       case 'direction':
-        send({ t: 'value', v: state.cue.approaching ? Math.sin(t * 0.5 + i * 2) : 0 });
+        send({ t: 'value', v: 0.6 * Math.sin(t * 0.4 + i * 2) });
         break;
       case 'memory':
-        send({ t: 'value', v: 0.3 + 0.2 * Math.sin(t) });
-        if (Math.random() < 0.01) send({ t: 'onset', v: 0.8 });
+        send({ t: 'value', v: 0.5 + 0.3 * Math.sin(t * 0.7) });
+        break;
+      case 'speed':
+        if (Math.sin(t * 0.2 + i) > -0.3) send({ t: 'scratch', v: 0.6 + Math.random() * 0.3 });
         break;
       case 'instinct':
-        if (Math.random() < 0.25) send({ t: 'tap' });
-        if (Math.random() < 0.03) send({ t: 'scratch', v: 0.7 });
-        break;
-      case 'hearing':
-        if (Math.random() < 0.13) send({ t: 'beat', acc: 0.5 + Math.random() * 0.5 });
-        break;
-      case 'emotion':
-        if (Math.random() < 0.02) {
-          hold = !hold;
-          send({ t: 'hold', on: hold });
-        }
-        if (Math.random() < 0.004) send({ t: 'flinch' });
+        if (Math.sin(t * 0.15 + i) > 0.7) send({ t: 'shake', v: 0.8 });
         break;
       case 'heartbeat':
-        if (Math.floor(t * 10) % 9 === 0) send({ t: 'tap' });
+        // tap along with the pulse on the big screen
+        if (t - beatAt >= 60 / state.cue.tempo) {
+          beatAt = t;
+          send({ t: 'tap' });
+        }
         break;
     }
   }, 100);

@@ -1,35 +1,99 @@
-// Session lifecycle: night-ending fallback, heartbeat extension, director commands, role assignment.
+// Session lifecycle: night-ending fallbacks, the heartbeat, the senses' effects, director commands, role assignment.
 import assert from 'node:assert/strict';
 import { Session, TICK_HZ, type Outbox } from '../server/session';
+import type { SenseId } from '../shared/types';
 
 const out: Outbox = { displays() {}, directors() {}, phone() {}, counts: () => ({ displays: 0, phones: 0, directors: 0, debug: 0 }) };
-const run = (s: Session, sec: number, until?: () => boolean) => {
+const run = (s: Session, sec: number, until?: () => boolean, each?: (i: number) => void) => {
   for (let i = 0; i < sec * TICK_HZ; i++) {
+    each?.(i);
     s.step();
     if (until?.()) return;
   }
 };
-const roles = (s: Session) => [...s.players.values()].map((p) => (p.role.variant ? p.role.sense + '-b' : p.role.sense));
+const roles = (s: Session) => [...s.players.values()].map((p) => p.role.sense);
+const ended = (s: Session) => () => s.phase === 'sleep' || s.phase === 'arrival';
 
 // the night ends when time runs out, then summary, then a new world in the lobby
-const a = new Session('A', { seed: 'x', maxDurationSec: 60, finalGraceSec: 10, maxHeartbeatExtensionSec: 0, summarySec: 5 }, out);
+const a = new Session('A', { seed: 'x', maxDurationSec: 60, finalGraceSec: 10, summarySec: 5 }, out);
 a.start();
-run(a, 120, () => a.phase === 'sleep' || a.phase === 'arrival');
+// hold Dargato still so he cannot reach home
+run(a, 120, ended(a), () => a.devInput({ sense: 'speed', hold: 0 }));
 assert.equal(a.phase, 'sleep');
-assert.ok(Math.abs(a.journeyT - 70) < 1);
+assert.equal(a.endCause, 'time');
+assert.ok(Math.abs(a.journeyT - 70) < 1, `journeyT ${a.journeyT}`);
 run(a, 30, () => a.phase === 'lobby');
 assert.equal(a.phase, 'lobby');
 assert.notEqual(a.seed, 'x');
 
-// HEARTBEAT extends the night, bounded by its maximum
-const b = new Session('B', { seed: 'y', maxDurationSec: 60, finalGraceSec: 10, maxHeartbeatExtensionSec: 40 }, out);
-b.start();
-for (let i = 0; i < 200 * TICK_HZ; i++) {
-  if (i % 26 === 0) b.devInput({ sense: 'heartbeat', input: { t: 'tap' } });
-  b.step();
-  if (b.phase === 'sleep' || b.phase === 'arrival') break;
-}
-assert.ok(b.extension > 39 && b.extension <= 40, `extension ${b.extension}`);
+// HEARTBEAT: nobody tapping ends the night (heart too slow), tapping too fast ends it too
+const slow = new Session('S', { seed: 'y', heartFailSec: 6 }, out);
+slow.start();
+run(slow, 60, ended(slow), () => slow.devInput({ sense: 'heartbeat', hold: 0 }));
+assert.equal(slow.endCause, 'slow');
+assert.ok(slow.journeyT < 20, `slow ended at ${slow.journeyT}`);
+
+const fast = new Session('F', { seed: 'y', heartFailSec: 6 }, out);
+fast.start();
+run(fast, 60, ended(fast), (i) => i % 8 === 0 && fast.devInput({ sense: 'heartbeat', input: { t: 'tap' } }));
+assert.equal(fast.endCause, 'fast');
+
+// tapping on the beat keeps it alive (the simulated heartbeat does that by itself)
+const steady = new Session('H', { seed: 'y', heartFailSec: 6 }, out);
+steady.start();
+run(steady, 40, ended(steady), () => steady.devInput({ sense: 'speed', hold: 0 }));
+assert.equal(steady.phase, 'journey');
+assert.ok(steady.cat.I.strain < 0.5, `strain ${steady.cat.I.strain}`);
+
+// MEMORY: silence scatters the paths and he cannot walk, even with his paws moving
+const m = new Session('M', { seed: 'z' }, out);
+m.start();
+run(m, 10);
+run(m, 6, undefined, () => {
+  m.devInput({ sense: 'memory', hold: 0 });
+  m.devInput({ sense: 'speed', hold: 1 });
+});
+assert.ok(m.cat.I.cohesion < 0.2, `cohesion ${m.cat.I.cohesion}`);
+const mx = m.cat.x;
+const mz = m.cat.z;
+run(m, 2, undefined, () => {
+  m.devInput({ sense: 'memory', hold: 0 });
+  m.devInput({ sense: 'speed', hold: 1 });
+});
+assert.ok(Math.hypot(m.cat.x - mx, m.cat.z - mz) < 0.3, 'no path, no walking');
+assert.equal(m.cat.state, 'hesitating');
+// sound brings the paths back and he walks
+run(m, 4, undefined, () => {
+  m.devInput({ sense: 'memory', hold: 0.8 });
+  m.devInput({ sense: 'speed', hold: 1 });
+});
+assert.ok(m.cat.I.cohesion > 0.7, `cohesion ${m.cat.I.cohesion}`);
+assert.ok(m.cat.speed > 1, `speed ${m.cat.speed}`);
+
+// DIRECTION turns him even while he stands; he never leaves the streets
+const h0 = m.cat.heading;
+run(m, 1, undefined, () => {
+  m.devInput({ sense: 'speed', hold: 0 });
+  m.devInput({ sense: 'direction', hold: 1 });
+});
+assert.ok(Math.abs(m.cat.heading - h0) > 0.5, 'turns right');
+run(m, 20, undefined, (i) => {
+  m.devInput({ sense: 'speed', hold: 1 });
+  m.devInput({ sense: 'memory', hold: 0.8 });
+  m.devInput({ sense: 'direction', hold: Math.sin(i / 40) });
+  assert.ok(m.cat.walk.inside(m.cat.x, m.cat.z), 'inside the streets');
+});
+
+// SIGHT: too dark and too bright both hurt, the middle is clear; INSTINCT lights the way home
+run(m, 3, undefined, () => m.devInput({ sense: 'sight', hold: 0 }));
+assert.ok(m.cat.I.light < 0.2);
+run(m, 3, undefined, () => m.devInput({ sense: 'sight', hold: 1 }));
+assert.ok(m.cat.I.glare > 0.8);
+run(m, 3, undefined, () => m.devInput({ sense: 'sight', hold: 0.5 }));
+assert.ok(m.cat.I.light > 0.9 && m.cat.I.glare < 0.05);
+run(m, 2, undefined, () => m.devInput({ sense: 'instinct', hold: 1 }));
+assert.ok(m.cat.I.instinct > 0.8);
+assert.ok(m.snapshot().planned.length > 0);
 
 // director commands
 const c = new Session('C', { seed: 'z' }, out);
@@ -44,26 +108,32 @@ const z0 = c.cat.z;
 run(c, 3);
 assert.ok(c.cat.x === x0 && c.cat.z === z0, 'paused cat must not move');
 c.command({ c: 'resume' });
-c.command({ c: 'hint' });
-c.command({ c: 'memory' });
-assert.ok(c.hints.hints.some((h) => h.source === 'director'));
-assert.ok(c.hints.hints.some((h) => h.source === 'memory'));
 c.command({ c: 'ending', kind: 'home' });
 assert.equal(c.phase, 'arrival');
 c.command({ c: 'reset' });
 assert.equal(c.phase, 'lobby');
 assert.equal(c.world.seed, 'weimar');
-c.command({ c: 'config', patch: { catSpeed: 3.3, sensitivity: { vision: 2 } as never } });
+c.command({ c: 'config', patch: { catSpeed: 3.3, sensitivity: { sight: 2 } as never } });
 assert.equal(c.config.catSpeed, 3.3);
-assert.equal(c.config.sensitivity.vision, 2);
+assert.equal(c.config.sensitivity.sight, 2);
 assert.equal(c.config.sensitivity.direction, 1);
 
-// role assignment: 6 core senses, HEARTBEAT, then variants (or averaged repeats)
-c.setBots(10);
-assert.deepEqual(roles(c), ['vision', 'direction', 'instinct', 'emotion', 'hearing', 'memory', 'heartbeat', 'vision-b', 'direction-b', 'emotion-b']);
-c.config.extraPlayerMode = 'average';
-c.setBots(0);
-c.setBots(10);
-assert.deepEqual(roles(c).slice(7), ['vision', 'direction', 'instinct']);
+// role assignment: the six senses, then repeats of the least-held sense (averaged)
+c.setBots(9);
+const r = roles(c);
+assert.deepEqual(r.slice(0, 6), ['direction', 'speed', 'memory', 'heartbeat', 'sight', 'instinct'] as SenseId[]);
+assert.deepEqual(r.slice(6), ['direction', 'speed', 'memory'] as SenseId[]);
+
+// two players on the same sense are averaged
+const avg = new Session('V', { seed: 'v' }, out);
+avg.setBots(8);
+const turners = [...avg.players.values()].filter((p) => p.role.sense === 'direction');
+assert.equal(turners.length, 2);
+avg.bots.clear();
+turners[0].sense.value = 1;
+turners[1].sense.value = -0.2;
+turners.forEach((p) => (p.sense.valueAt = avg.now + 1e6));
+avg.step();
+assert.ok(Math.abs(avg.senses.turn - 0.4) < 0.01, `turn ${avg.senses.turn}`);
 
 console.log('lifecycle OK');

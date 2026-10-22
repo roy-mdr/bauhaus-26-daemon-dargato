@@ -126,12 +126,10 @@ export interface World {
 
 // ---------- Roles ----------
 
-export type SenseId = 'vision' | 'direction' | 'memory' | 'instinct' | 'hearing' | 'emotion' | 'heartbeat';
+export type SenseId = 'sight' | 'speed' | 'direction' | 'memory' | 'instinct' | 'heartbeat';
 
 export interface RoleRef {
   sense: SenseId;
-  /** variant B steers a different setting with the same input */
-  variant: boolean;
 }
 
 // ---------- Cat ----------
@@ -153,63 +151,41 @@ export type CatState =
   | 'home'
   | 'sleeping';
 
+/** what the senses currently do to Dargato (server-computed, sent to every view) */
 export interface CatInternals {
-  fatigue: number;
-  calm: number;
-  curiosity: number;
-  caution: number;
-  homeward: number;
+  /** SIGHT: averaged camera brightness 0..1 */
+  sight: number;
+  /** how much light reaches his eyes 0..1 (too dark below the comfortable band) */
+  light: number;
+  /** glare fog 0..1 (too bright above the comfortable band) */
+  glare: number;
+  /** SPEED: how fast his paws move 0..1 */
+  paws: number;
+  /** DIRECTION: -1 turning left .. 1 turning right */
+  turn: number;
+  /** MEMORY: how well the particle paths hold together 0..1 (below ~0.3 he cannot walk) */
+  cohesion: number;
+  /** INSTINCT: how red the shortest way home glows 0..1 */
+  instinct: number;
+  /** HEARTBEAT: averaged tap rate in bpm (0 = nobody taps) */
+  heartRate: number;
+  /** the heartbeat slider: -1 too slow .. 0 on the beat .. 1 too fast */
+  heart: number;
+  /** 0..1; the night ends when it reaches 1 */
+  strain: number;
+  /** no progress toward home for a long while */
   lost: number;
-  energy: number;
-  perception: number;
-  acuity: number;
-  redGain: number;
-  soundGain: number;
-  explore: number;
-  rest: number;
-  farHearing: number;
-  heartbeat: number;
-  direction: number;
-  memory: number;
-}
-
-export interface OptionScore {
-  edgeId: number;
-  toNode: number;
-  turn: number; // radians, + = left
-  total: number;
-  terms: Record<string, number>;
-}
-
-export type HintKind = 'red-glow' | 'reflection' | 'pawprints' | 'sound' | 'silhouette' | 'clarity';
-
-export interface Hint {
-  id: number;
-  kind: HintKind;
-  edgeId: number;
-  /** junction node from which the hint is seen (hint covers the first part of the edge leaving this node) */
-  nodeId: number;
-  strength: number;
-  /** visible strength after perception etc. (computed by server) */
-  visible: number;
-  t0: number;
-  until: number;
-  source: string;
 }
 
 export type WorldEventKind =
-  | 'memory-sound'
-  | 'memory-flash'
   | 'distant-red-light'
-  | 'familiar-sound'
   | 'deja-vu'
   | 'roof-cat'
   | 'red-balloon'
   | 'home-chorus'
   | 'startle'
   | 'recovered'
-  | 'discovery'
-  | 'heartbeat';
+  | 'discovery';
 
 export interface WorldEvent {
   id: number;

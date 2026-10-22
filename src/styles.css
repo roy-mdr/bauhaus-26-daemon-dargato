@@ -65,6 +65,73 @@ button {
   --red: 0;
   background: radial-gradient(ellipse at center, transparent 55%, rgba(20, 20, 20, 0.35) 100%), radial-gradient(ellipse at center, transparent 60%, rgba(195, 34, 28, calc(var(--red) * 1)) 100%);
 }
+/* HEARTBEAT: the pulse to tap with, and a slider of how the hearts keep up */
+.heart-meter {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  width: min(320px, 70vw);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 14px;
+  align-items: center;
+  pointer-events: none;
+  transition: opacity 1s;
+  --beat: 0;
+  --pos: 0;
+  --strain: 0;
+}
+.heart-pulse {
+  grid-row: 1 / span 2;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--red);
+  opacity: calc(0.35 + var(--beat) * 0.65);
+  transform: scale(calc(0.75 + var(--beat) * 0.55));
+  box-shadow: 0 0 calc(var(--beat) * 18px) rgba(195, 34, 28, 0.8);
+}
+.heart-track {
+  position: relative;
+  height: 6px;
+  background: rgba(150, 148, 143, 0.35);
+  box-shadow: 0 0 0 calc(var(--strain) * 3px) rgba(195, 34, 28, calc(var(--strain) * 0.5));
+}
+.heart-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 35%;
+  width: 30%;
+  background: rgba(56, 55, 53, 0.35);
+}
+.heart-mark {
+  position: absolute;
+  top: -5px;
+  left: calc(50% + var(--pos) * 50%);
+  width: 4px;
+  height: 16px;
+  margin-left: -2px;
+  background: var(--black);
+  box-shadow: 0 0 0 1px rgba(239, 237, 232, 0.6);
+  transition: left 0.2s linear;
+}
+.heart-meter[data-off='1'] .heart-mark {
+  background: var(--red);
+}
+.heart-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--charcoal);
+  opacity: 0.7;
+  margin-top: 6px;
+  text-shadow: 0 0 6px rgba(239, 237, 232, 0.9);
+}
 .lobby {
   position: absolute;
   inset: 0;
@@ -506,6 +573,12 @@ button.small.ghost {
 .meter-fill.red {
   background: var(--red);
 }
+.meter-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #3a3937;
+}
 .meter-center {
   position: absolute;
   left: 50%;
@@ -557,22 +630,10 @@ button.small.ghost {
   background: var(--offwhite);
   box-shadow: 0 0 40px rgba(239, 237, 232, 0.6);
   transition: opacity 0.15s, transform 0.15s;
+  pointer-events: none;
 }
-.junction-cue {
-  text-align: center;
-  font-size: 14px;
-  letter-spacing: 0.2em;
-  color: #8f8d89;
-  padding: 10px;
-  border: 1px solid transparent;
-}
-.junction-cue.on {
-  color: var(--offwhite);
-  border-color: var(--red);
-  animation: pulse 1s ease-in-out infinite;
-}
-@keyframes pulse {
-  50% { background: rgba(195, 34, 28, 0.25); }
+.eye.glare {
+  box-shadow: 0 0 90px 30px rgba(255, 255, 255, 0.85);
 }
 .tilt-view {
   display: flex;
@@ -616,8 +677,40 @@ button.small.ghost {
   background: #2a1210;
   border-color: var(--red);
 }
-.pad.restraint {
-  border-style: dashed;
+.scratch-pad {
+  --k: 0;
+  background: linear-gradient(180deg, rgba(195, 34, 28, calc(var(--k) * 0.5)), #1d1d1c 70%);
+  user-select: none;
+}
+.scratch-pad.side {
+  background: linear-gradient(90deg, rgba(195, 34, 28, calc(var(--k) * 0.5)), #1d1d1c 50%, rgba(195, 34, 28, calc(var(--k) * 0.5)));
+}
+.joystick {
+  position: relative;
+  height: 120px;
+  border-radius: 60px;
+  background: #1d1d1c;
+  border: 1px solid #383735;
+  touch-action: none;
+}
+.joystick-knob {
+  position: absolute;
+  top: 50%;
+  width: 60px;
+  height: 60px;
+  margin: -30px 0 0 -30px;
+  border-radius: 50%;
+  background: var(--red);
+  pointer-events: none;
+}
+.pulse-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--red);
+}
+.row.center {
+  justify-content: center;
 }
 .memory-orb {
   width: 120px;
@@ -627,66 +720,8 @@ button.small.ghost {
   background: radial-gradient(circle, #5a5855, #1d1d1c 70%);
   transition: transform 0.12s;
 }
-.memory-orb.flash {
+.memory-orb.red {
   background: radial-gradient(circle, #ff5a4f, #1d1d1c 70%);
-}
-.emotion-circle {
-  width: min(70vw, 280px);
-  height: min(70vw, 280px);
-  margin: 10px auto;
-  border-radius: 50%;
-  border: 2px solid #555;
-  display: grid;
-  place-items: center;
-  font-size: 18px;
-  letter-spacing: 0.2em;
-  color: var(--pale);
-  touch-action: none;
-  transition: transform 0.6s, background 0.6s;
-}
-.emotion-circle.held {
-  transform: scale(0.92);
-  background: rgba(195, 34, 28, 0.25);
-  border-color: var(--red);
-}
-.hearing {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  flex: 1;
-  min-height: 260px;
-}
-.hearing-half {
-  position: relative;
-  background: #1d1d1c;
-  border: 1px solid #383735;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  touch-action: none;
-}
-.hearing-half span {
-  position: absolute;
-  bottom: 8px;
-  font-size: 11px;
-  letter-spacing: 0.2em;
-  color: #8f8d89;
-}
-.hearing-half.active {
-  border-color: #555;
-}
-.hearing-target {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  border: 2px solid var(--pale);
-}
-.hearing-ring {
-  position: absolute;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  border: 3px solid var(--red);
 }
 .heart {
   width: min(60vw, 240px);

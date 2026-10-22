@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PhoneInput, PhoneState, SensorStatus } from '../../shared/protocol';
-import { CameraLuminance, MicListener, TiltSensor, vibrate, type SensorState } from './sensors';
+import { roleInfo } from '../../shared/roles';
+import { CameraLuminance, MicListener, ShakeSensor, TiltSensor, vibrate, type SensorState } from './sensors';
 
 export interface ControlProps {
   state: PhoneState;
@@ -9,13 +10,17 @@ export interface ControlProps {
   setSensor: (s: SensorStatus) => void;
 }
 
-function Meter({ value, min = 0, max = 1, label, red }: { value: number; min?: number; max?: number; label?: string; red?: boolean }) {
-  const k = Math.max(0, Math.min(1, (value - min) / (max - min)));
+const clamp = (v: number, lo = 0, hi = 1) => (v < lo ? lo : v > hi ? hi : v);
+
+function Meter({ value, min = 0, max = 1, label, red, band }: { value: number; min?: number; max?: number; label?: string; red?: boolean; band?: [number, number] }) {
+  const k = clamp((value - min) / (max - min));
+  const at = (v: number) => clamp((v - min) / (max - min)) * 100;
   const centered = min < 0;
   return (
     <div className="meter">
       {label && <span className="meter-label">{label}</span>}
       <div className="meter-track">
+        {band && <div className="meter-band" style={{ left: `${at(band[0])}%`, width: `${at(band[1]) - at(band[0])}%` }} />}
         {centered ? (
           <div className={'meter-fill' + (red ? ' red' : '')} style={{ left: `${Math.min(50, k * 100)}%`, width: `${Math.abs(k - 0.5) * 100}%` }} />
         ) : (
@@ -55,38 +60,74 @@ function useSensor(name: string, setSensor: ControlProps['setSensor']) {
   return { state, setState, fallback, setFallback, calibrated, setCalibrated };
 }
 
-/** a manual slider for fallbacks */
-function Slider({ value, onChange, min = 0, max = 1, springBack }: { value: number; onChange: (v: number) => void; min?: number; max?: number; springBack?: boolean }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const update = (e: React.PointerEvent) => {
-    const r = ref.current!.getBoundingClientRect();
-    const k = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-    onChange(min + k * (max - min));
-  };
-  const k = (value - min) / (max - min);
-  return (
-    <div
-      ref={ref}
-      className="slider"
-      onPointerDown={(e) => {
-        (e.target as HTMLElement).setPointerCapture(e.pointerId);
-        update(e);
-      }}
-      onPointerMove={(e) => e.buttons && update(e)}
-      onPointerUp={() => springBack && onChange((min + max) / 2)}
-      onPointerCancel={() => springBack && onChange((min + max) / 2)}
-    >
-      <div className="slider-knob" style={{ left: `${k * 100}%` }} />
-    </div>
-  );
+function useTouchSensor(setSensor: ControlProps['setSensor']) {
+  useEffect(() => {
+    setSensor({ sensor: 'touch', state: 'active', calibrated: true });
+  }, [setSensor]);
 }
 
-// ---------------- VISION / RED SIGHT ----------------
+/** runs every animation frame with the elapsed seconds */
+function useFrameLoop(fn: (dt: number) => void, active = true) {
+  const ref = useRef(fn);
+  ref.current = fn;
+  useEffect(() => {
+    if (!active) return;
+    let raf = 0;
+    let last = performance.now();
+    const loop = () => {
+      const now = performance.now();
+      ref.current(Math.min(0.1, (now - last) / 1000));
+      last = now;
+      raf = requestAnimationFrame(loop);
+    };
+    loop();
+    return () => cancelAnimationFrame(raf);
+  }, [active]);
+}
 
-export function VisionControl({ state, sendValue, setSensor }: ControlProps) {
+/** pointer travel on a pad, summed per ~150 ms window and sent as one gesture */
+function useStroke(axis: 'down' | 'side', onWindow: (px: number) => void) {
+  const st = useRef({ last: { x: 0, y: 0 }, dist: 0, sentAt: 0, dir: 0 });
+  return {
+    onPointerDown: (e: React.PointerEvent) => {
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      st.current.last = { x: e.clientX, y: e.clientY };
+    },
+    onPointerMove: (e: React.PointerEvent) => {
+      if (!e.buttons) return;
+      const s = st.current;
+      const dx = e.clientX - s.last.x;
+      const dy = e.clientY - s.last.y;
+      s.last = { x: e.clientX, y: e.clientY };
+      // SPEED counts only strokes toward the bottom; INSTINCT counts side-to-side travel
+      if (axis === 'down') s.dist += Math.max(0, dy);
+      else s.dist += Math.abs(dx);
+      const now = performance.now();
+      if (now - s.sentAt > 150) {
+        onWindow(s.dist);
+        s.dist = 0;
+        s.sentAt = now;
+      }
+    },
+  };
+}
+
+function Instruction({ state, fallback }: { state: PhoneState; fallback: boolean }) {
+  const info = roleInfo(state.role);
+  return <p className="note">{fallback ? info.fallback : info.instruction}</p>;
+}
+
+// the light band (camera value) in which he sees clearly, matching the server's curves
+const CLEAR_BAND: [number, number] = [0.3, 0.7];
+
+// ---------------- SIGHT ----------------
+
+export function SightControl({ state, sendValue, setSensor }: ControlProps) {
   const s = useSensor('camera', setSensor);
   const cam = useRef<CameraLuminance | null>(null);
   const [v, setV] = useState(0.5);
+  const eye = useRef(0.5);
+  const swipe = useRef({ y: 0, on: false });
   const enable = async () => {
     s.setState('requesting');
     const c = new CameraLuminance();
@@ -100,20 +141,36 @@ export function VisionControl({ state, sendValue, setSensor }: ControlProps) {
     else s.setFallback(true);
   };
   useEffect(() => () => cam.current?.stop(), []);
+  // fallback: the eye keeps closing by itself; swiping up holds it open (too much: blinding)
+  useFrameLoop((dt) => {
+    eye.current = clamp(eye.current - dt * 0.07);
+    setV(eye.current);
+    sendValue(eye.current);
+  }, s.fallback);
+  const open = clamp(v / 0.5);
   return (
     <div className="control">
-      <div className="big-meter">
-        <div className="eye" style={{ opacity: 0.25 + v * 0.75, transform: `scale(${0.7 + v * 0.5})` }} />
+      <div
+        className="big-meter"
+        onPointerDown={(e) => {
+          (e.target as HTMLElement).setPointerCapture(e.pointerId);
+          swipe.current = { y: e.clientY, on: true };
+        }}
+        onPointerMove={(e) => {
+          if (!s.fallback || !swipe.current.on) return;
+          const up = swipe.current.y - e.clientY;
+          swipe.current.y = e.clientY;
+          if (up > 0) eye.current = clamp(eye.current + up / 600);
+        }}
+        onPointerUp={() => (swipe.current.on = false)}
+        style={{ touchAction: 'none' }}
+      >
+        <div className={'eye' + (v > CLEAR_BAND[1] ? ' glare' : '')} style={{ transform: `scaleY(${0.06 + open * 0.94})`, opacity: 0.35 + Math.min(1, v * 1.5) * 0.65 }} />
       </div>
-      <Meter value={v} label="light" red={state.role.variant} />
+      <Meter value={v} label="dark · clear · blinding" band={CLEAR_BAND} red />
+      <Instruction state={state} fallback={s.fallback} />
       {s.fallback ? (
-        <Slider
-          value={v}
-          onChange={(x) => {
-            setV(x);
-            sendValue(x);
-          }}
-        />
+        <p className="note">swipe up on the eye</p>
       ) : s.state === 'active' ? (
         <div className="row">
           <button
@@ -146,7 +203,63 @@ export function VisionControl({ state, sendValue, setSensor }: ControlProps) {
   );
 }
 
-// ---------------- DIRECTION / WANDERLUST ----------------
+// ---------------- SPEED ----------------
+
+export function SpeedControl({ state, send, setSensor }: ControlProps) {
+  useTouchSensor(setSensor);
+  const [scratch, setScratch] = useState(0);
+  const stroke = useStroke('down', (px) => {
+    // ~300 px of downward travel in 150 ms is a frantic scratch
+    const v = clamp(px / 300);
+    setScratch(v);
+    if (v > 0.03) {
+      send({ t: 'scratch', v });
+      if (v > 0.5) vibrate(8);
+    }
+  });
+  useFrameLoop((dt) => setScratch((x) => x * Math.exp(-dt * 4)));
+  return (
+    <div className="control">
+      <div className="pad big scratch-pad" {...stroke} style={{ ['--k' as string]: scratch }}>
+        <span>scratch ↓</span>
+      </div>
+      <Instruction state={state} fallback={false} />
+      <Meter value={state.cue.level} label="his pace" red />
+    </div>
+  );
+}
+
+// ---------------- DIRECTION ----------------
+
+function Joystick({ onChange }: { onChange: (x: number) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [x, setX] = useState(0);
+  const update = (e: React.PointerEvent) => {
+    const r = ref.current!.getBoundingClientRect();
+    const v = clamp((e.clientX - (r.left + r.width / 2)) / (r.width / 2 - 30), -1, 1);
+    setX(v);
+    onChange(v);
+  };
+  const release = () => {
+    setX(0);
+    onChange(0);
+  };
+  return (
+    <div
+      ref={ref}
+      className="joystick"
+      onPointerDown={(e) => {
+        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        update(e);
+      }}
+      onPointerMove={(e) => e.buttons && update(e)}
+      onPointerUp={release}
+      onPointerCancel={release}
+    >
+      <div className="joystick-knob" style={{ left: `calc(50% + ${x} * (50% - 30px))` }} />
+    </div>
+  );
+}
 
 export function DirectionControl({ state, sendValue, setSensor }: ControlProps) {
   const s = useSensor('motion', setSensor);
@@ -171,31 +284,23 @@ export function DirectionControl({ state, sendValue, setSensor }: ControlProps) 
     }
   };
   useEffect(() => () => tilt.current?.stop(), []);
-  const labels = state.role.variant ? ['explore', 'homeward'] : ['left', 'right'];
   return (
     <div className="control">
-      <div className={'junction-cue' + (state.cue.approaching ? ' on' : '')}>{state.cue.approaching ? 'a junction - choose now' : 'walking...'}</div>
       <div className="tilt-view">
-        <span>{labels[0]}</span>
+        <span>left</span>
         <div className="tilt-track">
           <div className="tilt-dot" style={{ left: `${50 + x * 45}%` }} />
         </div>
-        <span>{labels[1]}</span>
+        <span>right</span>
       </div>
+      <Instruction state={state} fallback={s.fallback} />
       {s.fallback ? (
-        <>
-          <p className="note">Drag and hold toward a side.</p>
-          <Slider
-            value={x}
-            min={-1}
-            max={1}
-            springBack
-            onChange={(v) => {
-              setX(v);
-              sendValue(v);
-            }}
-          />
-        </>
+        <Joystick
+          onChange={(v) => {
+            setX(v);
+            sendValue(v);
+          }}
+        />
       ) : s.state === 'active' ? (
         <button
           className="small"
@@ -216,35 +321,28 @@ export function DirectionControl({ state, sendValue, setSensor }: ControlProps) 
   );
 }
 
-// ---------------- MEMORY / ECHO ----------------
+// ---------------- MEMORY ----------------
 
-export function MemoryControl({ state, send, sendValue, setSensor }: ControlProps) {
+export function MemoryControl({ state, sendValue, setSensor }: ControlProps) {
   const s = useSensor('microphone', setSensor);
   const mic = useRef<MicListener | null>(null);
   const [level, setLevel] = useState(0);
-  const [flash, setFlash] = useState(0);
   const [calibrating, setCalibrating] = useState(false);
   const taps = useRef<number[]>([]);
+  const tapLevel = useRef(0);
   const lastSent = useRef(0);
-  const fire = (rhythm: boolean, v: number, bpm = 100, reg = 0.8) => {
-    setFlash(performance.now());
-    vibrate(rhythm ? [40, 40, 40] : 40);
-    send(rhythm ? { t: 'rhythm', bpm, reg } : { t: 'onset', v });
-  };
   const enable = async () => {
     s.setState('requesting');
     const m = new MicListener();
-    m.threshold = 0.22 / Math.max(0.3, state.sensitivity);
+    m.rangeDb = 40 / Math.max(0.3, state.sensitivity);
     m.onLevel = (v) => {
       const now = performance.now();
-      if (now - lastSent.current > 200) {
+      if (now - lastSent.current > 150) {
         lastSent.current = now;
         setLevel(v);
         sendValue(v);
       }
     };
-    m.onOnset = (v) => fire(false, v);
-    m.onRhythm = (bpm, reg) => fire(true, 1, bpm, reg);
     const r = await m.start();
     s.setState(r);
     if (r === 'active') {
@@ -257,45 +355,31 @@ export function MemoryControl({ state, send, sendValue, setSensor }: ControlProp
     } else s.setFallback(true);
   };
   useEffect(() => () => mic.current?.stop(), []);
-  const knock = () => {
+  // fallback: tapping makes sound; ~6 taps per second is as loud as it gets
+  useFrameLoop(() => {
     const now = performance.now();
-    taps.current = [...taps.current.filter((t) => now - t < 4000), now];
-    const ts = taps.current.slice(-5);
-    if (ts.length >= 4) {
-      const iv = ts.slice(1).map((t, i) => t - ts[i]);
-      const mean = iv.reduce((a, b) => a + b, 0) / iv.length;
-      const sd = Math.sqrt(iv.reduce((a, b) => a + (b - mean) ** 2, 0) / iv.length);
-      if (sd / mean < 0.25 && mean > 180 && mean < 1300) {
-        taps.current = [];
-        fire(true, 1, 60000 / mean, 1 - (sd / mean) * 3);
-        return;
-      }
-    }
-    fire(false, 0.8);
-  };
-  const recent = performance.now() - flash < 500;
+    taps.current = taps.current.filter((t) => now - t < 1500);
+    const target = clamp(taps.current.length / 1.5 / 6);
+    tapLevel.current += (target - tapLevel.current) * (target > tapLevel.current ? 0.3 : 0.05);
+    setLevel(tapLevel.current);
+    sendValue(tapLevel.current);
+  }, s.fallback);
   return (
     <div className="control">
-      <div className={'memory-orb' + (recent ? ' flash' : '')} style={{ transform: `scale(${0.8 + level * 0.6})` }} />
-      <Meter value={level} label="sound" red={state.role.variant} />
-      {state.cue.cooldown > 0 && !state.role.variant && <p className="note">the memory is settling... {state.cue.cooldown}s</p>}
+      <div className="memory-orb" style={{ transform: `scale(${0.7 + level * 0.8})`, opacity: 0.4 + level * 0.6 }} />
+      <Meter value={state.cue.level} label="the paths" red />
+      <Instruction state={state} fallback={s.fallback} />
       {calibrating && <p className="note">Stay quiet: listening to the room...</p>}
       {s.fallback ? (
-        <>
-          <button className="pad" onPointerDown={knock}>
-            knock
-          </button>
-          <p className="note">Knock once for a sound, four even knocks for a rhythm.</p>
-          {state.role.variant && (
-            <Slider
-              value={level}
-              onChange={(v) => {
-                setLevel(v);
-                sendValue(v);
-              }}
-            />
-          )}
-        </>
+        <button
+          className="pad"
+          onPointerDown={() => {
+            taps.current.push(performance.now());
+            vibrate(10);
+          }}
+        >
+          tap
+        </button>
       ) : s.state === 'active' ? (
         <button
           className="small"
@@ -318,172 +402,56 @@ export function MemoryControl({ state, send, sendValue, setSensor }: ControlProp
   );
 }
 
-// ---------------- INSTINCT / RESTRAINT ----------------
+// ---------------- INSTINCT ----------------
 
 export function InstinctControl({ state, send, setSensor }: ControlProps) {
-  useEffect(() => {
-    setSensor({ sensor: 'touch', state: 'active', calibrated: true });
-  }, [setSensor]);
-  const scratch = useRef({ dist: 0, last: { x: 0, y: 0 }, t: 0, sentAt: 0 });
-  const [pulse, setPulse] = useState(0);
-  const lastTap = useRef(0);
-  const variant = state.role.variant;
-  return (
-    <div className="control">
-      <div
-        className={'pad big' + (variant ? ' restraint' : '')}
-        onPointerDown={(e) => {
-          const now = performance.now();
-          scratch.current.last = { x: e.clientX, y: e.clientY };
-          if (now - lastTap.current > 90) {
-            lastTap.current = now;
-            send({ t: 'tap' });
-            setPulse(now);
-            vibrate(15);
-          }
-        }}
-        onPointerMove={(e) => {
-          if (variant || !e.buttons) return;
-          const sc = scratch.current;
-          sc.dist += Math.hypot(e.clientX - sc.last.x, e.clientY - sc.last.y);
-          sc.last = { x: e.clientX, y: e.clientY };
-          const now = performance.now();
-          if (now - sc.sentAt > 250) {
-            const intensity = Math.min(1, sc.dist / 600);
-            if (intensity > 0.15) send({ t: 'scratch', v: intensity });
-            sc.dist = 0;
-            sc.sentAt = now;
-          }
-        }}
-      >
-        <span style={{ transform: `scale(${performance.now() - pulse < 120 ? 1.15 : 1})` }}>{variant ? 'tap to hold him back' : 'tap · scratch'}</span>
-      </div>
-      <Meter value={state.cue.level} label={variant ? 'caution' : 'energy'} red />
-    </div>
-  );
-}
-
-// ---------------- EMOTION / REST ----------------
-
-export function EmotionControl({ state, send, setSensor }: ControlProps) {
-  useEffect(() => {
-    setSensor({ sensor: 'touch', state: 'active', calibrated: true });
-  }, [setSensor]);
-  const [held, setHeld] = useState(false);
-  const start = useRef({ y: 0, t: 0 });
-  const variant = state.role.variant;
-  const release = () => {
-    if (!held) return;
-    setHeld(false);
-    send({ t: 'hold', on: false });
+  const s = useSensor('motion', setSensor);
+  const shake = useRef<ShakeSensor | null>(null);
+  const [v, setV] = useState(0);
+  const lastSent = useRef(0);
+  const fire = (x: number) => {
+    setV(x);
+    if (x > 0.08) send({ t: 'shake', v: x });
   };
-  return (
-    <div className="control">
-      <div
-        className={'emotion-circle' + (held ? ' held' : '')}
-        onPointerDown={(e) => {
-          (e.target as HTMLElement).setPointerCapture(e.pointerId);
-          start.current = { y: e.clientY, t: performance.now() };
-          setHeld(true);
-          send({ t: 'hold', on: true });
-          vibrate(20);
-        }}
-        onPointerMove={(e) => {
-          if (variant || !held) return;
-          if (e.clientY - start.current.y > 90 && performance.now() - start.current.t < 450) {
-            start.current.t = 0;
-            send({ t: 'flinch' });
-            vibrate([30, 30, 60]);
-            release();
-          }
-        }}
-        onPointerUp={release}
-        onPointerCancel={release}
-      >
-        <span>{variant ? (held ? 'resting...' : 'hold to rest') : held ? 'calm...' : 'hold'}</span>
-      </div>
-      {!variant && <p className="note">hold: calm · let go: curious · swipe down fast: wary</p>}
-      {variant ? <Meter value={state.cue.level} label="rest" /> : <Meter value={state.cue.level} min={-1} max={1} label="curious ← → calm" red />}
-    </div>
-  );
-}
-
-// ---------------- HEARING / FAR EAR ----------------
-
-export function HearingControl({ state, send, setSensor }: ControlProps) {
-  useEffect(() => {
-    setSensor({ sensor: 'touch', state: 'active', calibrated: true });
-  }, [setSensor]);
-  const [tick, setTick] = useState(0);
-  const beat = useRef({ next: performance.now() + 1000, side: 0, last: 0, lastSide: 0, hits: 0 });
-  const audio = useRef<AudioContext | null>(null);
-  const [score, setScore] = useState<number | null>(null);
-  const tempo = state.cue.tempo;
-  const cueSide = state.cue.side;
-  useEffect(() => {
-    let raf = 0;
-    const loop = () => {
-      const b = beat.current;
+  const enable = async () => {
+    s.setState('requesting');
+    const sh = new ShakeSensor();
+    sh.onValue = (x) => {
       const now = performance.now();
-      if (now >= b.next) {
-        b.last = b.next;
-        b.lastSide = b.side;
-        b.side = cueSide;
-        b.next = b.last + 60000 / Math.max(50, tempo);
-        if (audio.current) {
-          const ctx = audio.current;
-          const o = ctx.createOscillator();
-          const g = ctx.createGain();
-          const pan = ctx.createStereoPanner();
-          pan.pan.value = b.lastSide * 0.8;
-          o.frequency.value = b.lastSide === 0 ? 660 : 880;
-          g.gain.setValueAtTime(0.25, ctx.currentTime);
-          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
-          o.connect(g).connect(pan).connect(ctx.destination);
-          o.start();
-          o.stop(ctx.currentTime + 0.15);
-        }
-        vibrate(25);
+      if (now - lastSent.current > 150) {
+        lastSent.current = now;
+        fire(x);
       }
-      setTick(now);
-      raf = requestAnimationFrame(loop);
     };
-    loop();
-    return () => cancelAnimationFrame(raf);
-  }, [tempo, cueSide]);
-  const tap = (side: number) => {
-    if (!audio.current) {
-      audio.current = new AudioContext();
-      audio.current.resume().catch(() => {});
+    const r = await sh.start();
+    s.setState(r);
+    if (r === 'active') shake.current = sh;
+    else {
+      sh.stop();
+      s.setFallback(true);
     }
-    const b = beat.current;
-    const now = performance.now();
-    const dPrev = Math.abs(now - b.last);
-    const dNext = Math.abs(b.next - now);
-    const dt = Math.min(dPrev, dNext);
-    const targetSide = dPrev < dNext ? b.lastSide : b.side;
-    const sideOk = targetSide === 0 || targetSide === side;
-    const acc = Math.max(0, 1 - dt / 280) * (sideOk ? 1 : 0.25);
-    send({ t: 'beat', acc });
-    setScore(acc);
   };
-  const b = beat.current;
-  const period = 60000 / Math.max(50, tempo);
-  const k = Math.max(0, Math.min(1, (b.next - tick) / period));
-  const sideNext = b.side;
+  useEffect(() => () => shake.current?.stop(), []);
+  // ~400 px of side-to-side travel in 150 ms is a wild scratch
+  const stroke = useStroke('side', (px) => fire(clamp(px / 400)));
+  useFrameLoop((dt) => setV((x) => x * Math.exp(-dt * 3)), s.fallback);
   return (
     <div className="control">
-      <div className="hearing">
-        {[-1, 1].map((side) => (
-          <div key={side} className={'hearing-half' + (sideNext === side || sideNext === 0 ? ' active' : '')} onPointerDown={() => tap(side)}>
-            <div className="hearing-target" />
-            {(sideNext === side || sideNext === 0) && <div className="hearing-ring" style={{ transform: `scale(${1 + k * 2.2})`, opacity: 1 - k * 0.7 }} />}
-            <span>{side < 0 ? 'left' : 'right'}</span>
-          </div>
-        ))}
-      </div>
-      <p className="note">{score === null ? 'tap the side of the pulse, when the ring meets the circle' : score > 0.7 ? 'clear!' : score > 0.35 ? 'almost' : 'missed'}</p>
-      <Meter value={state.cue.level} label={state.role.variant ? 'home heard' : 'hearing'} red />
+      {s.fallback ? (
+        <div className="pad big scratch-pad side" {...stroke} style={{ ['--k' as string]: v }}>
+          <span>← scratch →</span>
+        </div>
+      ) : (
+        <div className="memory-orb red" style={{ transform: `scale(${0.7 + v * 0.8}) rotate(${v * 25}deg)` }} />
+      )}
+      <Meter value={state.cue.level} label="the way home" red />
+      <Instruction state={state} fallback={s.fallback} />
+      {!s.fallback && s.state !== 'active' && (
+        <button className="primary" onClick={enable}>
+          Wake his instinct (motion sensor)
+        </button>
+      )}
+      <SensorBar label="motion" state={s.state} fallback={s.fallback} onEnable={enable} onFallback={() => s.setFallback(!s.fallback)} />
     </div>
   );
 }
@@ -491,36 +459,33 @@ export function HearingControl({ state, send, setSensor }: ControlProps) {
 // ---------------- HEARTBEAT ----------------
 
 export function HeartbeatControl({ state, send, setSensor }: ControlProps) {
-  useEffect(() => {
-    setSensor({ sensor: 'touch', state: 'active', calibrated: true });
-  }, [setSensor]);
-  const taps = useRef<number[]>([]);
-  const [bpm, setBpm] = useState(0);
-  const [steady, setSteady] = useState(0);
+  useTouchSensor(setSensor);
   const [pulse, setPulse] = useState(0);
+  const [beat, setBeat] = useState(0);
+  const t0 = useRef(performance.now());
+  // the same tempo as the pulse on the big screen (only the rate matters, not the phase)
+  useFrameLoop(() => {
+    const ph = (((performance.now() - t0.current) / 1000) * state.cue.tempo) / 60;
+    setBeat(Math.pow(Math.max(0, Math.cos((ph % 1) * Math.PI * 2)), 12));
+  });
   const tap = () => {
-    const now = performance.now();
-    taps.current = [...taps.current.filter((t) => now - t < 6000), now];
     send({ t: 'tap' });
-    setPulse(now);
+    setPulse(performance.now());
     vibrate(20);
-    const ts = taps.current;
-    if (ts.length >= 3) {
-      const iv = ts.slice(1).map((t, i) => t - ts[i]);
-      const mean = iv.reduce((a, b) => a + b, 0) / iv.length;
-      const sd = Math.sqrt(iv.reduce((a, b) => a + (b - mean) ** 2, 0) / iv.length);
-      setBpm(Math.round(60000 / mean));
-      setSteady(Math.max(0, 1 - (sd / mean) * 3));
-    }
   };
   const recent = performance.now() - pulse < 150;
+  const h = state.cue.level;
   return (
     <div className="control">
       <button className={'heart' + (recent ? ' beat' : '')} onPointerDown={tap}>
         ♥
       </button>
-      <p className="note">{bpm ? `${bpm} bpm · ${steady > 0.7 ? 'steady' : steady > 0.4 ? 'uneven' : 'restless'}` : 'tap a calm, steady beat'}</p>
-      <Meter value={state.cue.level} label="night extended" red />
+      <div className="row center">
+        <span className="pulse-dot" style={{ opacity: 0.25 + beat * 0.75, transform: `scale(${1 + beat * 0.4})` }} />
+        <span className="note">the pulse · {state.cue.tempo} bpm</span>
+      </div>
+      <Meter value={h} min={-1} max={1} label="too slow · on the beat · too fast" band={[-0.3, 0.3]} red />
+      <Instruction state={state} fallback={false} />
     </div>
   );
 }

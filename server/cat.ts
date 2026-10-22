@@ -1,77 +1,170 @@
-// Dargato's autonomous behaviour: movement on the street graph, junction
-// decisions, moods, fatigue, reactions and detour recovery. Server-authoritative.
-import { clamp, otherNode, sampleEdge, astar, leaveHeading } from '../shared/graph';
+// Dargato's body in the street: free movement steered by the senses, held inside
+// the street corridors, plus his small autonomous reactions. Server-authoritative.
+import { astar, clamp, leaveHeading, sampleEdge, wrapAngle } from '../shared/graph';
 import { Rng } from '../shared/rng';
-import type { CatInternals, CatState, DiscoveryKind, Hint, Landmark, OptionScore, World } from '../shared/types';
+import type { CatInternals, CatState, DiscoveryKind, Landmark, World } from '../shared/types';
 import type { CatSnapshot } from '../shared/protocol';
-import { decisiveTerm, scoreOptions, type Influences } from './routeChoice';
-
-export interface Decision {
-  t: number;
-  node: number;
-  chosen: number;
-  options: OptionScore[];
-  decisive: string;
-  margin: number;
-}
 
 export interface CatHooks {
-  onDecision(d: Decision): void;
-  onArriveNode(node: number): void;
-  onApproach(node: number, arriveEdge: number): void;
   onHome(): void;
   onDiscovery(node: number, kind: DiscoveryKind): void;
   onDetour(): void;
   onRecovered(): void;
   onLandmarkNear(lm: Landmark): void;
-  hints(): Hint[];
+  /** he entered a street (fresh: never walked before) */
+  onStreet(edge: number, fresh: boolean): void;
 }
 
-const STOPPED: CatState[] = ['paused', 'sniffing', 'hesitating', 'alert', 'frightened', 'recovering', 'resting', 'investigating', 'arriving', 'home', 'sleeping', 'idle'];
+/** what the senses ask of his body this tick */
+export interface CatDrive {
+  /** SPEED: paw rate 0..1 */
+  paws: number;
+  /** DIRECTION: -1 left .. 1 right */
+  turn: number;
+  /** MEMORY: whether there are paths to walk on, 0..1 */
+  cohesion: number;
+}
+
+const TURN_RATE = 1.9; // rad/s at full tilt
+const BODY = 0.3; // how close to the edge of a corridor he walks
+const CELL = 8;
+/** directions tried, in order, when the way straight ahead is blocked */
+const FEEL = [0, 0.25, -0.25, 0.5, -0.5, 0.8, -0.8, 1.1, -1.1];
+
+interface Segment {
+  ax: number;
+  az: number;
+  bx: number;
+  bz: number;
+  len: number;
+  /** half width of the walkable corridor */
+  hw: number;
+  edge: number;
+  /** distance along the edge (from node a) where this segment starts */
+  s0: number;
+}
+
+interface Disc {
+  x: number;
+  z: number;
+  r: number;
+  node: number;
+}
+
+interface Near {
+  seg: Segment;
+  /** distance along the edge from node a */
+  s: number;
+  dist: number;
+  /** unit tangent from a to b */
+  tx: number;
+  tz: number;
+}
+
+/** the walkable area: street corridors and junction discs, with a spatial grid */
+export class Walkable {
+  segs: Segment[] = [];
+  discs: Disc[] = [];
+  private grid = new Map<string, { segs: Segment[]; discs: Disc[] }>();
+
+  constructor(world: World) {
+    for (const e of world.edges) {
+      for (let i = 0; i < e.points.length - 1; i++) {
+        const a = e.points[i];
+        const b = e.points[i + 1];
+        const len = Math.hypot(b.x - a.x, b.z - a.z);
+        if (len < 1e-4) continue;
+        this.segs.push({ ax: a.x, az: a.z, bx: b.x, bz: b.z, len, hw: Math.max(0.35, e.width / 2 - BODY), edge: e.id, s0: e.cum[i] });
+      }
+    }
+    for (const n of world.nodes) {
+      const maxW = Math.max(...n.edges.map((eid) => world.edges[eid].width));
+      this.discs.push({ x: n.x, z: n.z, r: Math.max(n.r, maxW / 2 + 0.3) - BODY, node: n.id });
+    }
+    for (const sg of this.segs) this.cover(Math.min(sg.ax, sg.bx) - sg.hw, Math.min(sg.az, sg.bz) - sg.hw, Math.max(sg.ax, sg.bx) + sg.hw, Math.max(sg.az, sg.bz) + sg.hw, (c) => c.segs.push(sg));
+    for (const d of this.discs) this.cover(d.x - d.r, d.z - d.r, d.x + d.r, d.z + d.r, (c) => c.discs.push(d));
+  }
+
+  private cover(x0: number, z0: number, x1: number, z1: number, add: (c: { segs: Segment[]; discs: Disc[] }) => void) {
+    for (let i = Math.floor(x0 / CELL); i <= Math.floor(x1 / CELL); i++) {
+      for (let j = Math.floor(z0 / CELL); j <= Math.floor(z1 / CELL); j++) {
+        const k = i + ',' + j;
+        let c = this.grid.get(k);
+        if (!c) this.grid.set(k, (c = { segs: [], discs: [] }));
+        add(c);
+      }
+    }
+  }
+
+  private cell(x: number, z: number) {
+    return this.grid.get(Math.floor(x / CELL) + ',' + Math.floor(z / CELL));
+  }
+
+  private project(sg: Segment, x: number, z: number): Near {
+    const tx = (sg.bx - sg.ax) / sg.len;
+    const tz = (sg.bz - sg.az) / sg.len;
+    const u = clamp((x - sg.ax) * tx + (z - sg.az) * tz, 0, sg.len);
+    const px = sg.ax + tx * u;
+    const pz = sg.az + tz * u;
+    return { seg: sg, s: sg.s0 + u, dist: Math.hypot(x - px, z - pz), tx, tz };
+  }
+
+  disc(x: number, z: number): Disc | null {
+    for (const d of this.cell(x, z)?.discs ?? []) if (Math.hypot(x - d.x, z - d.z) <= d.r) return d;
+    return null;
+  }
+
+  inside(x: number, z: number): boolean {
+    const c = this.cell(x, z);
+    if (!c) return false;
+    for (const d of c.discs) if (Math.hypot(x - d.x, z - d.z) <= d.r) return true;
+    for (const sg of c.segs) if (this.project(sg, x, z).dist <= sg.hw) return true;
+    return false;
+  }
+
+  /** the closest corridor (searching the whole town if the local cell is empty) */
+  nearest(x: number, z: number): Near {
+    const local = this.cell(x, z)?.segs;
+    let best: Near | null = null;
+    for (const sg of local?.length ? local : this.segs) {
+      const n = this.project(sg, x, z);
+      if (!best || n.dist - sg.hw < best.dist - best.seg.hw) best = n;
+    }
+    return best!;
+  }
+}
 
 export class CatSim {
-  mode: 'node' | 'edge' = 'node';
-  node: number;
-  edge = -1;
-  from = -1;
-  to = -1;
-  s = 0;
   x = 0;
   z = 0;
   heading = 0;
   speed = 0;
+  paws = 0;
   state: CatState = 'idle';
   stateT = 0;
   look: [number, number] | null = null;
+  /** street he is on (nearest corridor), position along it, and the node he is heading to */
+  edge: number;
+  s = 0;
+  from = -1;
+  to = -1;
+  /** junction disc he stands in, -1 in a street */
+  node: number;
   I: CatInternals;
   visits = new Map<number, number>();
-  visitedNodes = new Set<number>();
-  options: OptionScore[] = [];
-  leader = -1;
-  hesitateT = 0;
-  hesitateDur = 0;
-  arriveEdge = -1;
-  commitT = 0;
-  approached = false;
   bestDHome: number;
   tSinceBest = 0;
   inDetour = false;
   detours = 0;
-  decisions = 0;
-  junctions = 0;
   distance = 0;
-  reversedOnEdge = false;
-  private noise = new Map<number, number>();
-  private lookFlip = 0;
-  private sniffCooldown = 6;
-  private seenLandmarks = new Set<number>();
+  seenLandmarks = new Set<number>();
   discovered = new Set<number>();
-  private restT = 0;
-  private restless = false;
-  private landmarksByNode = new Map<number, Landmark[]>();
-  private afterStop: (() => void) | null = null;
+  cfgSpeed = 3.2;
+  readonly walk: Walkable;
+  private street = -1;
+  private lookT = 0;
+  private sniffCooldown = 6;
   private rng: Rng;
-  shortestEdges: Set<number>;
 
   constructor(
     public world: World,
@@ -79,407 +172,193 @@ export class CatSim {
     seed: string,
   ) {
     this.rng = new Rng('cat:' + seed);
+    this.walk = new Walkable(world);
+    this.edge = world.startEdge;
     this.node = world.start;
     const n = world.nodes[world.start];
     this.x = n.x;
     this.z = n.z;
     this.heading = leaveHeading(world.edges[world.startEdge], world.start);
     this.bestDHome = world.distHome[world.start];
-    this.I = {
-      fatigue: 0,
-      calm: 0.3,
-      curiosity: 0.3,
-      caution: 0.2,
-      homeward: 0.55,
-      lost: 0,
-      energy: 0,
-      perception: 0.6,
-      acuity: 0.25,
-      redGain: 1,
-      soundGain: 1,
-      explore: 0,
-      rest: 0,
-      farHearing: 0,
-      heartbeat: 0,
-      direction: 0,
-      memory: 0.2,
-    };
-    for (const l of world.landmarks) {
-      if (!this.landmarksByNode.has(l.nodeId)) this.landmarksByNode.set(l.nodeId, []);
-      this.landmarksByNode.get(l.nodeId)!.push(l);
-    }
-    this.shortestEdges = new Set(astar(world.nodes, world.edges, world.start, world.home).edges);
-    this.visitedNodes.add(world.start);
+    this.I = { sight: 0.5, light: 1, glare: 0, paws: 0, turn: 0, cohesion: 1, instinct: 0, heartRate: 0, heart: 0, strain: 0, lost: 0 };
+    this.track();
   }
 
+  /** cost-weighted distance to home from where he stands */
   get distanceToHome(): number {
-    if (this.mode === 'node') return this.world.distHome[this.node];
     const e = this.world.edges[this.edge];
-    const rem = (e.length - this.s) * e.traversability;
-    return Math.min(this.world.distHome[this.to] + rem, this.world.distHome[this.from] + this.s * e.traversability);
+    const d = this.world.distHome;
+    return Math.min(d[e.a] + this.s * e.traversability, d[e.b] + (e.length - this.s) * e.traversability);
   }
 
   /** begin the journey from the start node */
   begin() {
-    this.state = 'paused';
-    this.stateT = 1;
-    this.afterStop = () => this.arrive(this.world.start, -1);
+    this.setTransient('paused', 1);
   }
 
-  setTransient(state: CatState, dur: number, then?: () => void) {
+  setTransient(state: CatState, dur: number) {
     if (this.state === 'arriving' || this.state === 'home' || this.state === 'sleeping') return;
-    const prevAfter = this.afterStop;
-    const wasHesitating = this.state === 'hesitating';
     this.state = state;
     this.stateT = dur;
-    this.afterStop =
-      then ??
-      (() => {
-        if (prevAfter) prevAfter();
-        else if (wasHesitating || this.mode === 'node') this.startHesitation(true);
-        else this.state = 'walking';
-      });
   }
 
-  /** startle / sound reaction; may turn him around mid-street when he is wary */
-  react(x: number, z: number, strength: number) {
-    if (STOPPED.includes(this.state) && this.state !== 'hesitating') return;
+  /** startle / sound reaction: a short stop with the ears up */
+  react(x: number, z: number) {
+    if (this.stateT > 0) return;
     this.look = [x, z];
-    const frightened = this.I.caution > 0.6 && strength > 0.5;
-    if (frightened) {
-      this.I.caution = clamp(this.I.caution + 0.1);
-      this.setTransient('frightened', 1.5);
-    } else {
-      this.setTransient('alert', 0.9);
-    }
-  }
-
-  /** a startle behind him can make him turn back (bounded: once per street, only after commitment) */
-  maybeReverse(): boolean {
-    if (this.mode !== 'edge' || this.reversedOnEdge || this.commitT < 4) return false;
-    const e = this.world.edges[this.edge];
-    if (this.s < 3 || this.s > e.length - 3) return false;
-    if (this.I.caution < 0.6) return false;
-    this.reversedOnEdge = true;
-    [this.from, this.to] = [this.to, this.from];
-    this.s = e.length - this.s;
-    this.approached = false;
-    return true;
+    this.setTransient('alert', 0.9);
   }
 
   teleport(node: number) {
-    this.mode = 'node';
-    this.node = node;
     const n = this.world.nodes[node];
     this.x = n.x;
     this.z = n.z;
     this.speed = 0;
-    this.afterStop = null;
-    this.state = 'paused';
-    this.stateT = 0.6;
-    this.afterStop = () => this.arrive(node, -1);
+    this.setTransient('paused', 0.6);
+    this.track();
   }
 
-  update(dt: number, inf: Influences, homeward: number) {
-    this.lastInf = inf;
-    // REST is bounded: once rested he grows restless and ignores it until it is released
-    if (inf.rest < 0.3) this.restless = false;
-    const rest = this.restless ? 0 : inf.rest;
-    this.updateInternals(dt, inf, homeward);
-
+  update(dt: number, d: CatDrive) {
+    this.paws = d.paws * this.cfgSpeed;
     if (this.state === 'idle' || this.state === 'home' || this.state === 'sleeping' || this.state === 'arriving') {
       this.speed = 0;
       return;
     }
-
-    // transient stops
-    if (this.state !== 'hesitating' && STOPPED.includes(this.state)) {
-      this.speed = Math.max(0, this.speed - dt * 6);
-      if (this.state === 'resting') {
-        // resting lasts while REST is held or he is exhausted
-        this.restT += dt;
-        if (this.restT > 5 && this.I.fatigue < 0.2) this.restless = true;
-        if ((rest > 0.4 && !this.restless) || this.I.fatigue > 0.6) return;
-        this.stateT = Math.min(this.stateT, 0.3);
-      }
-      this.stateT -= dt;
-      if (this.stateT <= 0) {
-        const cb = this.afterStop;
-        this.afterStop = null;
-        if (cb) cb();
-        else if (this.mode === 'edge') this.state = 'walking';
-        else this.startHesitation(false);
-        if ((this.state as CatState) !== 'hesitating' && this.mode === 'edge') this.look = null;
-      }
-      return;
-    }
-
-    if (this.state === 'hesitating') {
-      this.updateHesitation(dt, inf);
-      return;
-    }
-
-    // ---- moving along an edge ----
-    if (this.mode !== 'edge') return;
-    const e = this.world.edges[this.edge];
-    const toNode = this.world.nodes[this.to];
-    const remaining = e.length - this.s;
-    this.commitT += dt;
-
-    if (rest > 0.6 && this.state !== 'resting') {
-      this.restT = 0;
-      this.setTransient('resting', 1.5);
-      return;
-    }
-    if (this.I.fatigue > 0.92) {
-      this.restT = 0;
-      this.setTransient('resting', 3);
-      return;
-    }
-
-    const base = this.cfgSpeed;
-    let mult =
-      (0.85 + 0.9 * this.I.energy) *
-      (1 - 0.45 * this.I.fatigue) *
-      (1 - 0.32 * this.I.caution) *
-      (1 - 0.7 * rest) *
-      (1 + 0.1 * this.I.curiosity - 0.08 * this.I.calm);
-    if (toNode.edges.length >= 3 && remaining < 6) mult *= 0.7;
-    if (this.state === 'looking') mult *= 0.55;
-    const target = clamp(base * mult, 0.35, base * 2.1);
-    this.speed += clamp(target - this.speed, -dt * 4, dt * 3);
-    this.s += this.speed * dt;
-    this.distance += this.speed * dt;
-
-    if (this.state === 'looking') {
-      this.stateT -= dt;
-      if (this.stateT <= 0) {
-        this.state = 'walking';
-        this.look = null;
-      }
-    } else {
-      this.state = this.speed > base * 1.3 ? 'trotting' : 'walking';
-    }
-
-    // approaching a junction: let the hint system prepare the options
-    if (!this.approached && remaining < 10 && toNode.edges.length >= 3) {
-      this.approached = true;
-      this.hooks.onApproach(this.to, this.edge);
-    }
-
-    // glance at landmarks he passes
-    for (const lm of this.world.landmarks) {
-      if (this.seenLandmarks.has(lm.id)) continue;
-      const d = Math.hypot(lm.x - this.x, lm.z - this.z);
-      if (d < 7) {
-        this.seenLandmarks.add(lm.id);
-        this.hooks.onLandmarkNear(lm);
-        if (this.state === 'walking' || this.state === 'trotting') {
-          this.state = 'looking';
-          this.stateT = 1.4;
-          this.look = [lm.x, lm.z];
-        }
-      }
-    }
-
-    // occasional autonomous sniffing
-    this.sniffCooldown -= dt;
-    if (this.sniffCooldown <= 0 && this.commitT > 3 && remaining > 5 && this.rng.chance(dt * 0.05 * (1.2 - this.I.energy))) {
-      this.sniffCooldown = 12 + this.rng.range(0, 14);
-      this.setTransient('sniffing', 1.3);
-    }
-
-    if (this.s >= e.length) {
-      this.s = e.length;
-      this.updatePose();
-      this.arrive(this.to, this.edge);
-      return;
-    }
-    this.updatePose();
-  }
-
-  cfgSpeed = 2.4;
-
-  private updatePose() {
-    if (this.mode !== 'edge') return;
-    const p = sampleEdge(this.world.edges[this.edge], this.from, this.s);
-    this.x = p.x;
-    this.z = p.z;
-    this.heading = p.heading;
-  }
-
-  private updateInternals(dt: number, inf: Influences, homeward: number) {
-    const I = this.I;
-    const ease = (cur: number, target: number, rate: number) => cur + (target - cur) * Math.min(1, dt * rate);
-    I.perception = ease(I.perception, 0.25 + 0.75 * inf.perception, 2);
-    I.redGain = inf.redGain;
-    I.soundGain = inf.soundGain;
-    I.acuity = ease(I.acuity, inf.acuity, 2);
-    I.farHearing = inf.farHearing;
-    I.explore = inf.explore;
-    I.rest = inf.rest;
-    I.heartbeat = inf.heartbeat;
-    I.direction = inf.dir;
-    I.memory = inf.memoryLevel;
-    I.calm = ease(I.calm, 0.15 + 0.8 * inf.calmDrive, 0.5);
-    I.curiosity = ease(I.curiosity, 0.25 + 0.75 * inf.curiosityDrive, 0.6);
-    I.caution = ease(I.caution, clamp(0.12 + 0.7 * inf.cautionDrive + 0.5 * inf.restraint), 0.5);
-    const energyTarget = clamp(inf.energyDrive + inf.scratch * 0.5) * (1 - 0.6 * inf.restraint);
-    I.energy = ease(I.energy, energyTarget, energyTarget > I.energy ? 2 : 0.5);
-    const moving = this.mode === 'edge' && !STOPPED.includes(this.state);
-    I.fatigue = clamp(
-      I.fatigue +
-        dt * (moving ? 0.0008 + 0.012 * I.energy * I.energy + 0.01 * inf.scratch : -0.025) -
-        dt * inf.rest * 0.06 -
-        dt * I.calm * 0.002,
-    );
-    // lost: no improvement for a while
     this.tSinceBest += dt;
-    I.lost = ease(I.lost, clamp((this.tSinceBest - 50) / 80), 0.3);
-    I.homeward = homeward + 0.9 * I.lost;
+    this.I.lost += (clamp((this.tSinceBest - 60) / 90) - this.I.lost) * Math.min(1, dt * 0.3);
+
+    // DIRECTION turns him at any moment, also when he stands still
+    this.heading = wrapAngle(this.heading - d.turn * TURN_RATE * dt);
+
+    // short autonomous stops (startled, sniffing, a discovery)
+    if (this.stateT > 0) {
+      this.stateT -= dt;
+      this.speed = Math.max(0, this.speed - dt * 6);
+      if (this.stateT <= 0) this.look = null;
+      return;
+    }
+
+    // SPEED moves the paws; MEMORY decides whether there is a path under them
+    const path = smooth(0.2, 0.55, d.cohesion);
+    const target = this.cfgSpeed * d.paws * path * (this.lookT > 0 ? 0.6 : 1);
+    this.speed += clamp(target - this.speed, -dt * 6, dt * 3.5);
+
+    // with no hand on the direction he follows the street he is in
+    const inDisc = this.walk.disc(this.x, this.z);
+    if (Math.abs(d.turn) < 0.15 && this.speed > 0.2 && !inDisc) {
+      const n = this.walk.nearest(this.x, this.z);
+      const along = Math.atan2(n.tx, n.tz);
+      const fwd = Math.abs(wrapAngle(along - this.heading)) < Math.PI / 2 ? along : wrapAngle(along + Math.PI);
+      const diff = wrapAngle(fwd - this.heading);
+      if (Math.abs(diff) < 1) this.heading = wrapAngle(this.heading + diff * Math.min(1, dt * 2.2));
+    }
+
+    const moved = this.move(this.speed * dt, dt);
+    this.distance += moved;
+    if (moved < this.speed * dt * 0.3) this.speed *= 0.5;
+
+    if (this.lookT > 0) {
+      this.lookT -= dt;
+      if (this.lookT <= 0) this.look = null;
+    }
+    if (this.speed > 0.2) this.state = this.lookT > 0 ? 'looking' : this.speed > this.cfgSpeed * 0.6 ? 'trotting' : 'walking';
+    // paws moving without a path to walk on: treading, looking for the street
+    else this.state = d.paws > 0.15 ? 'hesitating' : 'paused';
+
+    this.track();
+    this.senseSurroundings(dt);
   }
 
-  private arrive(n: number, viaEdge: number) {
-    this.mode = 'node';
-    this.node = n;
-    this.arriveEdge = viaEdge;
-    this.edge = -1;
-    const node = this.world.nodes[n];
-    this.x = node.x;
-    this.z = node.z;
-    this.visitedNodes.add(n);
-    this.hooks.onArriveNode(n);
+  /**
+   * A step forward that never leaves the streets: against a wall he slides along it,
+   * or feels his way around the corner, and his heading follows.
+   */
+  private move(step: number, dt: number): number {
+    if (step <= 0) return 0;
+    for (const a of FEEL) {
+      const h = this.heading + a;
+      const fx = Math.sin(h) * step * Math.cos(a);
+      const fz = Math.cos(h) * step * Math.cos(a);
+      if (this.walk.inside(this.x + fx, this.z + fz)) {
+        this.x += fx;
+        this.z += fz;
+        this.heading = wrapAngle(this.heading + a * Math.min(1, dt * 5));
+        return step * Math.cos(a);
+      }
+    }
+    return 0;
+  }
 
-    const dh = this.world.distHome[n];
-    if (dh < this.bestDHome - 0.1) {
+  /** which street, where along it, which junction; streets walked; detours */
+  private track() {
+    const n = this.walk.nearest(this.x, this.z);
+    const e = this.world.edges[n.seg.edge];
+    const disc = this.walk.disc(this.x, this.z);
+    this.node = disc ? disc.node : -1;
+    // a street counts once he is out of the junction and in it
+    if (!disc && n.seg.edge !== this.street) {
+      this.street = n.seg.edge;
+      const fresh = !this.visits.has(n.seg.edge);
+      this.visits.set(n.seg.edge, (this.visits.get(n.seg.edge) ?? 0) + 1);
+      this.hooks.onStreet(n.seg.edge, fresh);
+    }
+    this.edge = n.seg.edge;
+    this.s = n.s;
+    const forward = Math.sin(this.heading) * n.tx + Math.cos(this.heading) * n.tz >= 0;
+    this.from = forward ? e.a : e.b;
+    this.to = forward ? e.b : e.a;
+
+    const dh = this.distanceToHome;
+    if (dh < this.bestDHome - 1) {
       this.bestDHome = dh;
       this.tSinceBest = 0;
       if (this.inDetour) {
         this.inDetour = false;
         this.hooks.onRecovered();
-        this.setTransient('recovering', 1.5, () => this.afterArrival(n, viaEdge));
-        return;
       }
     } else if (!this.inDetour && dh > this.bestDHome + 18) {
       this.inDetour = true;
       this.detours++;
       this.hooks.onDetour();
     }
-    this.afterArrival(n, viaEdge);
   }
 
-  private afterArrival(n: number, viaEdge: number) {
-    const node = this.world.nodes[n];
-    if (n === this.world.home) {
+  private senseSurroundings(dt: number) {
+    if (this.node === this.world.home) {
       this.state = 'arriving';
       this.speed = 0;
       this.hooks.onHome();
       return;
     }
-    if (node.edges.length === 1) {
-      // dead end: investigate the discovery, then turn back
-      const back = node.edges[0];
-      if (node.discovery && !this.discovered.has(n)) {
-        this.discovered.add(n);
-        this.hooks.onDiscovery(n, node.discovery);
-        this.state = 'investigating';
-        this.stateT = 3;
+    // a dead end with something in it
+    if (this.node >= 0) {
+      const node = this.world.nodes[this.node];
+      if (node.discovery && node.edges.length === 1 && !this.discovered.has(node.id)) {
+        this.discovered.add(node.id);
+        this.hooks.onDiscovery(node.id, node.discovery);
         this.look = [node.x + Math.sin(this.heading) * 1.5, node.z + Math.cos(this.heading) * 1.5];
-      } else {
-        this.state = 'sniffing';
-        this.stateT = 1.2;
+        this.setTransient('investigating', 3);
+        return;
       }
-      this.afterStop = () => this.commit(back, n, []);
-      return;
     }
-    if (node.edges.length === 2 && viaEdge >= 0) {
-      // a bend: keep walking
-      const next = node.edges[0] === viaEdge ? node.edges[1] : node.edges[0];
-      this.commit(next, n, [], true);
-      return;
+    // glance at landmarks he passes
+    for (const lm of this.world.landmarks) {
+      if (this.seenLandmarks.has(lm.id)) continue;
+      if (Math.hypot(lm.x - this.x, lm.z - this.z) < 7) {
+        this.seenLandmarks.add(lm.id);
+        this.hooks.onLandmarkNear(lm);
+        if (this.speed > 0.2) {
+          this.lookT = 1.4;
+          this.look = [lm.x, lm.z];
+        }
+      }
     }
-    this.startHesitation(false);
-  }
-
-  private startHesitation(resume: boolean) {
-    if (this.mode !== 'node') {
-      this.state = 'walking';
-      return;
+    // an occasional sniff when he dawdles
+    this.sniffCooldown -= dt;
+    if (this.sniffCooldown <= 0 && this.speed > 0.2 && this.speed < this.cfgSpeed * 0.4 && this.rng.chance(dt * 0.06)) {
+      this.sniffCooldown = 12 + this.rng.range(0, 14);
+      this.setTransient('sniffing', 1.3);
     }
-    if (!resume) {
-      this.junctions++;
-      this.noise.clear();
-      for (const eid of this.world.nodes[this.node].edges) this.noise.set(eid, this.rng.range(-0.06, 0.06));
-      this.leader = -1;
-      this.hesitateT = 0;
-    }
-    this.state = 'hesitating';
-    this.options = this.score();
-    this.leader = this.options[0]?.edgeId ?? -1;
-    if (!resume) {
-      const margin = this.options.length > 1 ? this.options[0].total - this.options[1].total : 2;
-      this.hesitateDur = clamp(0.5 + (1 - clamp(margin)) * 1.8 + this.I.caution * 0.8 - this.I.energy * 0.5, 0.4, 3.2);
-    }
-  }
-
-  private score(): OptionScore[] {
-    return scoreOptions({
-      world: this.world,
-      node: this.node,
-      arriveEdge: this.arriveEdge,
-      I: this.I,
-      inf: this.lastInf,
-      hints: this.hooks.hints(),
-      visits: this.visits,
-      leader: this.leader,
-      noise: this.noise,
-      landmarksByNode: this.landmarksByNode,
-      shortestEdges: this.shortestEdges,
-    });
-  }
-
-  lastInf!: Influences;
-
-  private updateHesitation(dt: number, inf: Influences) {
-    this.speed = Math.max(0, this.speed - dt * 6);
-    this.hesitateT += dt;
-    this.options = this.score();
-    this.leader = this.options[0]?.edgeId ?? this.leader;
-    // look between the two strongest options while undecided
-    this.lookFlip -= dt;
-    if (this.lookFlip <= 0 && this.options.length) {
-      const close = this.options.length > 1 && this.options[0].total - this.options[1].total < 0.35;
-      const pick = close && this.rng.chance(0.5) ? this.options[1] : this.options[0];
-      const p = sampleEdge(this.world.edges[pick.edgeId], this.node, 7);
-      this.look = [p.x, p.z];
-      this.lookFlip = close ? 0.7 : 1.2;
-    }
-    if (this.hesitateT >= this.hesitateDur && this.options.length) {
-      const chosen = this.options[0];
-      const { term, margin } = decisiveTerm(this.options);
-      this.decisions++;
-      const d: Decision = { t: Date.now(), node: this.node, chosen: chosen.edgeId, options: this.options, decisive: term, margin };
-      this.hooks.onDecision(d);
-      this.commit(chosen.edgeId, this.node, this.options);
-    }
-  }
-
-  private commit(eid: number, from: number, _options: OptionScore[], keepSpeed = false) {
-    const e = this.world.edges[eid];
-    this.mode = 'edge';
-    this.edge = eid;
-    this.from = from;
-    this.to = otherNode(e, from);
-    this.s = 0;
-    this.commitT = 0;
-    this.approached = false;
-    this.reversedOnEdge = false;
-    this.visits.set(eid, (this.visits.get(eid) ?? 0) + 1);
-    this.state = 'walking';
-    this.look = null;
-    if (!keepSpeed) this.speed = Math.min(this.speed, 0.6);
-    this.options = [];
-    this.updatePose();
   }
 
   snapshot(): CatSnapshot {
@@ -490,18 +369,47 @@ export class CatSim {
       state: this.state,
       speed: this.speed,
       look: this.look,
+      paws: this.paws,
       edge: this.edge,
       from: this.from,
       to: this.to,
       s: this.s,
-      node: this.mode === 'node' ? this.node : -1,
+      node: this.node,
     };
   }
 
-  /** the A* route he would take from here if he simply followed his instinct */
+  /** the shortest way home from where he stands: his current street first */
   plannedRoute(): number[] {
-    const startNode = this.mode === 'node' ? this.node : this.to;
-    const r = astar(this.world.nodes, this.world.edges, startNode, this.world.home);
-    return this.mode === 'edge' ? [this.edge, ...r.edges] : r.edges;
+    const e = this.world.edges[this.edge];
+    const d = this.world.distHome;
+    const viaA = d[e.a] + this.s * e.traversability;
+    const viaB = d[e.b] + (e.length - this.s) * e.traversability;
+    const exit = viaA < viaB ? e.a : e.b;
+    if (exit === this.world.home) return [e.id];
+    const r = astar(this.world.nodes, this.world.edges, exit, this.world.home);
+    return r.edges[0] === e.id ? r.edges : [e.id, ...r.edges];
   }
+
+  /** the turn (-1..1, + = right) that points him along the shortest way home */
+  steerHome(): number {
+    const route = this.plannedRoute();
+    // aim a few metres ahead along the route
+    let target: { x: number; z: number };
+    const e = this.world.edges[route[0]];
+    const towardB = route.length > 1 ? this.world.edges[route[1]].a === e.b || this.world.edges[route[1]].b === e.b : e.b === this.world.home;
+    const exit = this.world.nodes[towardB ? e.b : e.a];
+    const remaining = towardB ? e.length - this.s : this.s;
+    if (remaining > 5 || route.length === 1) target = sampleEdge(e, e.a, towardB ? this.s + 5 : this.s - 5);
+    else {
+      const next = this.world.edges[route[1]];
+      target = sampleEdge(next, exit.id, 5 - remaining);
+    }
+    const want = Math.atan2(target.x - this.x, target.z - this.z);
+    return clamp(-wrapAngle(want - this.heading) * 1.4, -1, 1);
+  }
+}
+
+function smooth(a: number, b: number, v: number): number {
+  const t = clamp((v - a) / (b - a));
+  return t * t * (3 - 2 * t);
 }

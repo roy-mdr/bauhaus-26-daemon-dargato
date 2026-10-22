@@ -126,7 +126,7 @@ export default function DirectorApp() {
         {s && (
           <span className="status">
             code <b>{s.code}</b> · {s.phase}
-            {s.paused ? ' (paused)' : ''} · journey {fmtT(s.journeyT)} · soft limit in {fmtT(s.remaining)} · night ends in {fmtT(s.hardRemaining)} {s.extension > 1 ? `(+${Math.round(s.extension)}s heartbeat)` : ''}
+            {s.paused ? ' (paused)' : ''} · journey {fmtT(s.journeyT)} · soft limit in {fmtT(s.remaining)} · night ends in {fmtT(s.hardRemaining)} · heart strain {(s.inner.strain * 100).toFixed(0)}%
           </span>
         )}
       </header>
@@ -161,7 +161,7 @@ export default function DirectorApp() {
                 seed <b>{d.world.seed}</b> · {d.world.stats.nodes} nodes · {d.world.stats.edges} streets · {d.world.stats.loops} loops · {d.world.stats.deadEnds} dead ends · {d.world.stats.alleys} alleys · {d.world.stats.paths} paths ·{' '}
                 {d.world.stats.curved} curved · {d.world.stats.plazas} squares · {d.world.stats.tJunctions} T · {d.world.stats.crossroads} crossroads · shortest {d.world.stats.shortestPathLength}u · est. {fmtT(d.world.stats.estDurationSec)}
               </p>
-              <p className="dim small">click a node to move Dargato there · red dashed: instinct route · blue: options being weighed</p>
+              <p className="dim small">click a node to move Dargato there · red dashed: the shortest way home (what INSTINCT lights up)</p>
             </>
           )}
         </section>
@@ -169,8 +169,6 @@ export default function DirectorApp() {
         <section className="col">
           <h2>Triggers</h2>
           <div className="buttons">
-            <button onClick={() => d.cmd({ c: 'hint' })}>Route hint</button>
-            <button onClick={() => d.cmd({ c: 'memory' })}>Memory event</button>
             <button onClick={() => d.cmd({ c: 'event', kind: 'distant-red-light' })}>Red light</button>
             <button onClick={() => d.cmd({ c: 'event', kind: 'red-balloon' })}>Red balloon</button>
             <button onClick={() => d.cmd({ c: 'event', kind: 'home-chorus' })}>Cats calling</button>
@@ -190,11 +188,11 @@ export default function DirectorApp() {
               <h2>Atmosphere & pacing</h2>
               <Num label="fog" value={cfg.fogDensity} min={0} max={0.06} step={0.001} onChange={(v) => patch({ fogDensity: v })} />
               <Num label="light" value={cfg.lightIntensity} min={0.2} max={2} step={0.05} onChange={(v) => patch({ lightIntensity: v })} />
-              <Num label="hint visibility" value={cfg.hintVisibility} min={0} max={2.5} step={0.05} onChange={(v) => patch({ hintVisibility: v })} />
-              <Num label="cat speed" value={cfg.catSpeed} min={0.8} max={5} step={0.1} onChange={(v) => patch({ catSpeed: v })} />
+              <Num label="top speed (m/s)" value={cfg.catSpeed} min={0.8} max={6} step={0.1} onChange={(v) => patch({ catSpeed: v })} />
+              <Num label="pulse (bpm)" value={cfg.heartBpm} min={40} max={140} step={1} onChange={(v) => patch({ heartBpm: v })} />
+              <Num label="heart gives up after (s)" value={cfg.heartFailSec} min={3} max={60} step={1} onChange={(v) => patch({ heartFailSec: v })} />
               <Num label="soft limit (s)" value={cfg.maxDurationSec} min={120} max={900} step={10} onChange={(v) => patch({ maxDurationSec: v })} />
               <Num label="final grace (s)" value={cfg.finalGraceSec} min={0} max={300} step={10} onChange={(v) => patch({ finalGraceSec: v })} />
-              <Num label="max heartbeat bonus (s)" value={cfg.maxHeartbeatExtensionSec} min={0} max={400} step={10} onChange={(v) => patch({ maxHeartbeatExtensionSec: v })} />
               <Num label="summary (s)" value={cfg.summarySec} min={5} max={120} step={5} onChange={(v) => patch({ summarySec: v })} />
               <Toggle label="whispered text lines" value={cfg.whispers} onChange={(v) => patch({ whispers: v })} />
 
@@ -204,13 +202,6 @@ export default function DirectorApp() {
               ))}
               <Toggle label="simulate senses nobody plays" value={cfg.simulateMissing} onChange={(v) => patch({ simulateMissing: v })} />
               <Num label="simulation intensity" value={cfg.simIntensity} min={0} max={1} step={0.05} onChange={(v) => patch({ simIntensity: v })} />
-              <label className="num">
-                <span>players 8+</span>
-                <select value={cfg.extraPlayerMode} onChange={(e) => patch({ extraPlayerMode: e.target.value as 'variant' | 'average' })}>
-                  <option value="variant">role variants (then averaged repeats)</option>
-                  <option value="average">repeat senses, average inputs</option>
-                </select>
-              </label>
               <Toggle label="reshuffle roles each journey" value={cfg.reshuffleRoles} onChange={(v) => patch({ reshuffleRoles: v })} />
               <Toggle label="auto start" value={cfg.autoStart} onChange={(v) => patch({ autoStart: v })} />
               {cfg.autoStart && (
@@ -243,16 +234,10 @@ export default function DirectorApp() {
                     {p.id.startsWith('sim-') ? (
                       p.roleName
                     ) : (
-                      <select
-                        value={`${p.role.sense}${p.role.variant ? '-b' : ''}`}
-                        onChange={(e) => {
-                          const [sense, b] = e.target.value.split('-');
-                          d.cmd({ c: 'reassign', playerId: p.id, sense: sense as SenseId, variant: b === 'b' });
-                        }}
-                      >
-                        {SENSE_ORDER.flatMap((sn) => (sn === 'heartbeat' ? [[sn, false]] : [[sn, false], [sn, true]]) as [SenseId, boolean][]).map(([sn, v]) => (
-                          <option key={sn + v} value={`${sn}${v ? '-b' : ''}`}>
-                            {roleInfo({ sense: sn, variant: v }).name}
+                      <select value={p.role.sense} onChange={(e) => d.cmd({ c: 'reassign', playerId: p.id, sense: e.target.value as SenseId })}>
+                        {SENSE_ORDER.map((sn) => (
+                          <option key={sn} value={sn}>
+                            {roleInfo({ sense: sn }).name}
                           </option>
                         ))}
                       </select>
@@ -276,31 +261,13 @@ export default function DirectorApp() {
             <>
               <h2>Dargato</h2>
               <p className="small">
-                state <b>{s.cat.state}</b> · node {s.cat.node} · edge {s.cat.edge} · {s.diagnostics.distanceToHome}u from home (best {s.diagnostics.bestDistanceToHome}) · progress {(s.diagnostics.progress * 100).toFixed(0)}% · decisions {s.diagnostics.decisions} · detours {s.diagnostics.detours}
+                state <b>{s.cat.state}</b> · node {s.cat.node} · edge {s.cat.edge} · {s.diagnostics.distanceToHome}u from home (best {s.diagnostics.bestDistanceToHome}) · progress {(s.diagnostics.progress * 100).toFixed(0)}% · streets {s.diagnostics.visitedEdges} · detours {s.diagnostics.detours}
               </p>
               <div className="bars">
                 {Object.entries(s.inner).map(([k, v]) => (
-                  <Bar key={k} label={k} value={v as number} min={k === 'direction' || k === 'explore' ? -1 : 0} max={k === 'homeward' ? 4 : k === 'redGain' || k === 'soundGain' ? 2 : 1} />
+                  <Bar key={k} label={k} value={v as number} min={k === 'turn' || k === 'heart' ? -1 : 0} max={k === 'heartRate' ? 160 : 1} />
                 ))}
               </div>
-              {s.options.length > 0 && (
-                <>
-                  <h3>Route preferences now</h3>
-                  <OptionsTable options={s.options} />
-                </>
-              )}
-              <h3>Recent decisions</h3>
-              <table className="decisions small">
-                <tbody>
-                  {[...s.lastDecisions].reverse().map((dd, i) => (
-                    <tr key={i}>
-                      <td>n{dd.node}→e{dd.chosen}</td>
-                      <td>tipped by {dd.decisive}</td>
-                      <td>margin {dd.margin.toFixed(2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
               <h3>Diagnostics</h3>
               <p className="small dim">
                 tick {s.diagnostics.tickMs}ms · displays {s.diagnostics.clients.displays} · phones {s.diagnostics.clients.phones} · directors {s.diagnostics.clients.directors} · debug {s.diagnostics.clients.debug} · uptime {fmtT(s.diagnostics.uptimeSec)}
@@ -321,32 +288,3 @@ export default function DirectorApp() {
   );
 }
 
-export function OptionsTable({ options }: { options: DirectorState['options'] }) {
-  return (
-    <table className="options small">
-      <thead>
-        <tr>
-          <th>street</th>
-          <th>turn</th>
-          <th>total</th>
-          <th>terms</th>
-        </tr>
-      </thead>
-      <tbody>
-        {options.map((o, i) => (
-          <tr key={o.edgeId} className={i === 0 ? 'lead' : ''}>
-            <td>e{o.edgeId}</td>
-            <td>{o.turn > 0.5 ? 'left' : o.turn < -0.5 ? 'right' : 'ahead'}</td>
-            <td>{o.total.toFixed(2)}</td>
-            <td>
-              {Object.entries(o.terms)
-                .filter(([, v]) => Math.abs(v) > 0.02)
-                .map(([k, v]) => `${k} ${v > 0 ? '+' : ''}${v.toFixed(2)}`)
-                .join(' · ')}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}

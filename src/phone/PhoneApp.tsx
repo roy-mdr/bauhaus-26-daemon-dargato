@@ -2,10 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import type { PhoneInput, PhoneState, SensorStatus } from '../../shared/protocol';
 import { connect, hello } from '../net';
-import { DirectionControl, EmotionControl, HearingControl, HeartbeatControl, InstinctControl, MemoryControl, VisionControl, type ControlProps } from './controls';
+import type { SenseId } from '../../shared/types';
+import { DirectionControl, HeartbeatControl, InstinctControl, MemoryControl, SightControl, SpeedControl, type ControlProps } from './controls';
 import { keepAwake, secureContext } from './sensors';
 
 const STORE_KEY = 'dargato:player';
+
+const CONTROLS: Record<SenseId, (p: ControlProps) => React.JSX.Element> = {
+  sight: SightControl,
+  speed: SpeedControl,
+  direction: DirectionControl,
+  memory: MemoryControl,
+  instinct: InstinctControl,
+  heartbeat: HeartbeatControl,
+};
 
 function loadSaved(): { code: string; token: string; nickname: string } | null {
   try {
@@ -31,7 +41,6 @@ export default function PhoneApp() {
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(false);
   const [kicked, setKicked] = useState('');
-  const [showHelp, setShowHelp] = useState(true);
   const socketRef = useRef<Socket | null>(null);
   const joinedRef = useRef<{ code: string; nickname: string; token?: string } | null>(null);
 
@@ -148,20 +157,7 @@ export default function PhoneApp() {
 
   const props: ControlProps = { state, send, sendValue, setSensor };
   const sense = state.role.sense;
-  const Control =
-    sense === 'vision'
-      ? VisionControl
-      : sense === 'direction'
-        ? DirectionControl
-        : sense === 'memory'
-          ? MemoryControl
-          : sense === 'instinct'
-            ? InstinctControl
-            : sense === 'hearing'
-              ? HearingControl
-              : sense === 'emotion'
-                ? EmotionControl
-                : HeartbeatControl;
+  const Control = CONTROLS[sense];
   const ended = state.phase === 'summary' || state.phase === 'arrival' || state.phase === 'sleep';
 
   return (
@@ -175,11 +171,6 @@ export default function PhoneApp() {
         </div>
         <span className={'dot' + (connected ? ' on' : '')} title={connected ? 'connected' : 'reconnecting'} />
       </header>
-      {showHelp && (
-        <div className="instruction" onClick={() => setShowHelp(false)}>
-          {state.instruction}
-        </div>
-      )}
       {state.phase === 'lobby' && <div className="phase-note">Try your sense. The journey begins soon.</div>}
       {state.paused && <div className="phase-note">paused</div>}
       {ended && state.summary ? (
@@ -192,7 +183,7 @@ export default function PhoneApp() {
           <p className="dim">Stay for the next journey.</p>
         </div>
       ) : (
-        <Control key={sense + String(state.role.variant)} {...props} />
+        <Control key={sense} {...props} />
       )}
       <div className="feedback">{state.feedback}</div>
       {!ended && (

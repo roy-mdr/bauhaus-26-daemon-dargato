@@ -2,19 +2,36 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import QRCode from 'qrcode';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import type { DevInput, PhoneInput, Snapshot } from '../../shared/protocol';
+import { HEART_ZONE } from '../../shared/config';
+import type { DevInput, EndCause, Snapshot } from '../../shared/protocol';
 import { roleInfo } from '../../shared/roles';
-import type { SenseId, World, WorldEvent } from '../../shared/types';
+import type { World, WorldEvent } from '../../shared/types';
 import { connect, hello, joinUrl } from '../net';
 import { DisplayAudio } from './audio';
 import { Home } from './Home';
-import { Atmosphere, CameraRig, Dargato, DebugOverlay } from './Scene';
-import { Events, Hints } from './Signs';
-import { pushSnapshot, serverNow, store } from './store';
+import { Atmosphere, CameraRig, Dargato, DebugOverlay, SenseFx } from './Scene';
+import { Events } from './Signs';
+import { pushSnapshot, store } from './store';
 import { Thoughts } from './Thoughts';
 import { WorldMesh } from './WorldMesh';
 
 const audio = new DisplayAudio();
+
+const ENDING: Record<EndCause, string> = {
+  home: 'Dargato is home.',
+  slow: 'His heart grew too quiet. Not tonight.',
+  fast: 'His heart raced too hard. Not tonight.',
+  time: 'Not tonight. The street will keep his place.',
+};
+
+/** keys held on the main display, and the sense (and value) each one holds */
+const HOLD_KEYS: Record<string, DevInput & { hold: number }> = {
+  arrowleft: { sense: 'direction', hold: -1 },
+  arrowright: { sense: 'direction', hold: 1 },
+  arrowup: { sense: 'speed', hold: 0.8 },
+  m: { sense: 'memory', hold: 0.7 },
+  i: { sense: 'instinct', hold: 1 },
+};
 
 function AudioPump() {
   useFrame((_, dt) => audio.update(Math.min(0.1, dt)));
@@ -85,7 +102,7 @@ export default function DisplayApp() {
   useEffect(() => {
     const send = (d: DevInput) => socketRef.current?.emit('dev', d);
     const held = new Set<string>();
-    const vision = { v: 0.5 };
+    const sight = { v: 0.5 };
     const down = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
       if (k === 'enter') {
@@ -98,54 +115,20 @@ export default function DisplayApp() {
       }
       if (k === 'f') document.documentElement.requestFullscreen?.().catch(() => {});
       if (!store.latest?.render.keyboard) return;
+      if (k === ' ') e.preventDefault();
       if (held.has(k)) return;
       held.add(k);
-      const dev = (sense: SenseId, input: PhoneInput) => send({ sense, input });
-      switch (k) {
-        case 'arrowleft':
-          send({ sense: 'direction', hold: -1 });
-          break;
-        case 'arrowright':
-          send({ sense: 'direction', hold: 1 });
-          break;
-        case 'arrowup':
-          vision.v = Math.min(1, vision.v + 0.15);
-          dev('vision', { t: 'value', v: vision.v });
-          break;
-        case 'arrowdown':
-          vision.v = Math.max(0, vision.v - 0.15);
-          dev('vision', { t: 'value', v: vision.v });
-          break;
-        case ' ':
-          dev('instinct', { t: 'tap' });
-          break;
-        case 'c':
-          dev('emotion', { t: 'hold', on: true });
-          break;
-        case 'x':
-          dev('emotion', { t: 'flinch' });
-          break;
-        case 'm':
-          dev('memory', { t: 'onset', v: 0.9 });
-          break;
-        case 'n':
-          dev('memory', { t: 'rhythm', bpm: 110, reg: 0.9 });
-          break;
-        case 'j':
-          dev('hearing', { t: 'beat', acc: 0.95 });
-          break;
-        case 'k':
-          dev('heartbeat', { t: 'tap' });
-          break;
-      }
-      if (k === ' ') e.preventDefault();
+      if (HOLD_KEYS[k]) send(HOLD_KEYS[k]);
+      else if (k === 'w' || k === 's') {
+        sight.v = Math.max(0, Math.min(1, sight.v + (k === 'w' ? 0.15 : -0.15)));
+        send({ sense: 'sight', hold: sight.v });
+      } else if (k === ' ' || k === 'k') send({ sense: 'heartbeat', input: { t: 'tap' } });
     };
     const up = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
       held.delete(k);
       if (!store.latest?.render.keyboard) return;
-      if (k === 'arrowleft' || k === 'arrowright') send({ sense: 'direction', hold: null });
-      if (k === 'c') send({ sense: 'emotion', input: { t: 'hold', on: false } });
+      if (HOLD_KEYS[k]) send({ sense: HOLD_KEYS[k].sense, hold: null });
     };
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
@@ -176,10 +159,10 @@ export default function DisplayApp() {
             gl.shadowMap.type = THREE.PCFSoftShadowMap;
           }}
         >
+          <SenseFx />
           <Atmosphere world={world} />
           <WorldMesh world={world} />
           <Home world={world} />
-          <Hints world={world} />
           <Events />
           <Dargato />
           <Thoughts />
@@ -190,6 +173,7 @@ export default function DisplayApp() {
       )}
 
       <Vignette snap={snap} />
+      <HeartMeter />
 
       {phase === 'lobby' && (
         <div className="lobby">
@@ -210,6 +194,7 @@ export default function DisplayApp() {
               </span>
             ))}
             {snap && snap.realPlayers < 6 && <span className="chip ghost">missing senses are dreamed by Dargato himself</span>}
+            <span className="chip ghost">HEARTBEAT: tap with the pulse below</span>
           </div>
           <div className="lobby-hint">
             {snap && snap.autoStartIn >= 0 ? `The journey begins in ${snap.autoStartIn}s` : snap?.render.keyboard ? 'Press Enter to begin the journey' : 'Waiting for the host'}
@@ -235,7 +220,7 @@ export default function DisplayApp() {
       </div>
 
       {(phase === 'arrival' || phase === 'sleep') && (
-        <div className="center-text slow">{phase === 'arrival' ? 'Dargato is home.' : 'Not tonight. The street will keep his place.'}</div>
+        <div className="center-text slow">{ENDING[snap?.endCause ?? (phase === 'arrival' ? 'home' : 'time')]}</div>
       )}
 
       {phase === 'summary' && <Summary snap={snap!} />}
@@ -255,12 +240,10 @@ function Vignette({ snap }: { snap: Snapshot | null }) {
     const loop = () => {
       const s = store.latest;
       if (ref.current && s) {
-        const hb = s.inner.heartbeat;
-        const t = performance.now() / 1000;
-        const beat = Math.pow(Math.max(0, Math.sin(t * Math.PI * 2 * 1.1)), 10);
-        const flash = store.events.some((e) => e.kind === 'memory-flash' && serverNow() - e.t0 < 1500) ? 0.25 : 0;
-        ref.current.style.opacity = String(Math.min(1, 0.35 + hb * beat * 0.5 + flash + (s.overtime ? 0.25 : 0)));
-        ref.current.style.setProperty('--red', String(hb * beat * 0.35 + flash));
+        // the edges close in and redden with the heart's strain, throbbing with the pulse
+        const fx = store.fx;
+        ref.current.style.opacity = String(Math.min(1, 0.35 + fx.strain * 0.5 + (s.overtime ? 0.25 : 0)));
+        ref.current.style.setProperty('--red', String(fx.strain * (0.25 + 0.35 * fx.beat)));
       }
       raf = requestAnimationFrame(loop);
     };
@@ -270,16 +253,52 @@ function Vignette({ snap }: { snap: Snapshot | null }) {
   return <div ref={ref} className="vignette" data-phase={snap?.phase} />;
 }
 
+/** HEARTBEAT: the pulse to tap along with, and the slider of how the hearts are doing */
+function HeartMeter() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let raf = 0;
+    const loop = () => {
+      const s = store.latest;
+      const el = ref.current;
+      if (el && s) {
+        const show = s.phase === 'lobby' || s.phase === 'intro' || s.phase === 'journey';
+        el.style.opacity = show ? '1' : '0';
+        el.style.setProperty('--beat', String(store.fx.beat));
+        el.style.setProperty('--pos', String(s.inner.heart));
+        el.style.setProperty('--strain', String(store.fx.strain));
+        el.dataset.off = Math.abs(s.inner.heart) > HEART_ZONE ? '1' : '0';
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    loop();
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return (
+    <div ref={ref} className="heart-meter">
+      <div className="heart-pulse" />
+      <div className="heart-track">
+        <div className="heart-zone" />
+        <div className="heart-mark" />
+      </div>
+      <div className="heart-labels">
+        <span>too slow</span>
+        <span>too fast</span>
+      </div>
+    </div>
+  );
+}
+
 function Summary({ snap }: { snap: Snapshot }) {
   const sum = snap.summary;
   const t = sum?.durationSec ?? Math.round(snap.journeyT);
   const time = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
   return (
     <div className="summary">
-      <h2>{snap.ending === 'home' ? 'Dargato is home.' : 'Dargato sleeps in the street.'}</h2>
+      <h2>{snap.ending === 'home' ? 'Dargato is home.' : snap.endCause === 'fast' ? 'Dargato hides in a doorway until morning.' : 'Dargato sleeps in the street.'}</h2>
       {sum && (
         <p className="dim">
-          {time} through the streets · {sum.distance} paces · {sum.junctions} junction{sum.junctions === 1 ? '' : 's'} · {sum.detours} detour{sum.detours === 1 ? '' : 's'} · {sum.memories} memor{sum.memories === 1 ? 'y' : 'ies'} · {sum.hintsSeen} sign{sum.hintsSeen === 1 ? '' : 's'} seen
+          {time} through the streets · {sum.distance} paces · {sum.streets} street{sum.streets === 1 ? '' : 's'} · {sum.detours} detour{sum.detours === 1 ? '' : 's'} · {sum.discoveries} discover{sum.discoveries === 1 ? 'y' : 'ies'} · {sum.landmarks} red sign{sum.landmarks === 1 ? '' : 's'}
         </p>
       )}
       <div className="summary-players">
@@ -312,27 +331,8 @@ function DebugPanel({ snap }: { snap: Snapshot }) {
           </span>
         ))}
       </div>
-      {snap.options.length > 0 && (
-        <table>
-          <tbody>
-            {snap.options.map((o) => (
-              <tr key={o.edgeId}>
-                <td>e{o.edgeId}</td>
-                <td>{fmt(o.total)}</td>
-                <td className="terms">
-                  {Object.entries(o.terms)
-                    .filter(([, v]) => Math.abs(v) > 0.02)
-                    .map(([k, v]) => `${k}:${fmt(v)}`)
-                    .join(' ')}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      <div>hints: {snap.hints.map((h) => `${h.kind}@e${h.edgeId}=${fmt(h.visible)}`).join(', ') || '-'}</div>
       <div className="dim">
-        keys: ←/→ direction · ↑/↓ vision · space instinct · C hold emotion · X flinch · M/N memory · J hearing · K heartbeat · G debug · F fullscreen · Enter start
+        keys: ←/→ direction · ↑ speed (hold) · W/S sight · M memory (hold) · I instinct (hold) · space/K heartbeat · G debug · F fullscreen · Enter start
       </div>
       <div className="dim">players: {snap.players.map((p) => `${p.nickname}:${roleInfo(p.role).name}`).join(', ')}</div>
     </div>

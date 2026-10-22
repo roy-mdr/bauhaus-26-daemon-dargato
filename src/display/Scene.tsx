@@ -6,7 +6,13 @@ import { hashString } from '../../shared/rng';
 import type { World } from '../../shared/types';
 import { CatFigure, newPose } from './CatFigure';
 import { PAL } from './palette';
-import { sampleCat, serverNow, store } from './store';
+import { sampleCat, serverNow, store, updateFx } from './store';
+
+/** smooths the senses' scene effects once per frame, before anything reads them */
+export function SenseFx() {
+  useFrame((_, dt) => updateFx(Math.min(0.1, dt)), -1);
+  return null;
+}
 
 /** Dargato: interpolated from server snapshots, animated locally */
 export function Dargato() {
@@ -30,7 +36,8 @@ export function Dargato() {
     }
     pose.state = c.state;
     pose.stateTime = t - v.stateSince;
-    pose.speed = c.speed;
+    // paws keep moving even when there is no path to walk on
+    pose.speed = Math.max(c.speed, c.paws);
     if (c.look) {
       const rel = wrapAngle(Math.atan2(c.look[0] - c.x, c.look[1] - c.z) - v.heading);
       pose.lookYaw = rel;
@@ -38,13 +45,11 @@ export function Dargato() {
     } else {
       pose.lookYaw *= 0.9;
     }
-    const inner = store.latest?.inner;
-    if (inner) {
-      pose.curiosity = inner.curiosity;
-      pose.caution = inner.caution;
-      pose.calm = inner.calm;
-      pose.fatigue = inner.fatigue;
-    }
+    // forgetting scatters his shards, a strained heart pulls them together
+    const fx = store.fx;
+    pose.curiosity = fx.disperse;
+    pose.caution = fx.strain;
+    pose.calm = fx.steady;
   });
   return (
     <group ref={g}>
@@ -122,7 +127,10 @@ export function Atmosphere({ world }: { world: World }) {
   const hemi = useRef<THREE.HemisphereLight>(null!);
   const fog = useMemo(() => new THREE.FogExp2(PAL.fog, 0.02), []);
   const bg = useMemo(() => new THREE.Color(PAL.fog), []);
-  const tmp = useMemo(() => ({ base: new THREE.Color(PAL.fog), arr: new THREE.Color(PAL.fogArrival), sleep: new THREE.Color(PAL.fogSleep), mix: 0, sleepMix: 0, density: 0.02 }), []);
+  const tmp = useMemo(
+    () => ({ base: new THREE.Color(PAL.fog), arr: new THREE.Color(PAL.fogArrival), sleep: new THREE.Color(PAL.fogSleep), dark: new THREE.Color('#090909'), glare: new THREE.Color('#fbfaf6'), mix: 0, sleepMix: 0, density: 0.02 }),
+    [],
+  );
   const sunDir = useMemo(() => {
     const az = (hashString(world.seed) % 628) / 100;
     const el = 0.36;
@@ -137,25 +145,28 @@ export function Atmosphere({ world }: { world: World }) {
   useFrame((_, dt) => {
     const snap = store.latest;
     const c = store.cat;
-    const per = snap?.inner.perception ?? 0.6;
+    const fx = store.fx;
     const base = snap?.render.fog ?? 0.022;
     const phase = snap?.phase;
-    // VISION: brighter perception lifts the fog
-    let target = base * (1.5 - 0.95 * per);
-    if (phase === 'lobby') target = base * 0.8;
-    if (phase === 'intro') target = base * 1.2;
-    if (phase === 'arrival') target = base * 0.6;
+    // SIGHT: too bright and the glare fog thickens, too dark and the night closes in
+    const m = phase === 'lobby' ? 0.8 : phase === 'intro' ? 1.2 : phase === 'arrival' ? 0.6 : 1;
+    const target = base * m * (1 + 4.5 * fx.glare + 0.6 * (1 - fx.light));
     tmp.density += (target - tmp.density) * (1 - Math.exp(-dt * 1.5));
     fog.density = tmp.density;
     const arrival = phase === 'arrival' || (phase === 'summary' && snap?.ending === 'home') ? 1 : 0;
     const sleeping = phase === 'sleep' || (phase === 'summary' && snap?.ending === 'sleep') ? 1 : 0;
     tmp.mix += (arrival - tmp.mix) * (1 - Math.exp(-dt * 0.6));
     tmp.sleepMix += (sleeping + (snap?.overtime ? 0.35 : 0) - tmp.sleepMix) * (1 - Math.exp(-dt * 0.3));
-    fog.color.copy(tmp.base).lerp(tmp.arr, tmp.mix).lerp(tmp.sleep, Math.min(1, tmp.sleepMix));
+    fog.color
+      .copy(tmp.base)
+      .lerp(tmp.arr, tmp.mix)
+      .lerp(tmp.sleep, Math.min(1, tmp.sleepMix))
+      .lerp(tmp.dark, (1 - fx.light) * 0.97)
+      .lerp(tmp.glare, fx.glare * 0.85);
     bg.copy(fog.color);
-    const light = snap?.render.light ?? 1;
-    sun.current.intensity = 2.3 * light * (1 - 0.5 * Math.min(1, tmp.sleepMix));
-    hemi.current.intensity = 1.25 * light;
+    const light = (snap?.render.light ?? 1) * (0.02 + 0.98 * fx.light * fx.light);
+    sun.current.intensity = 2.3 * light * (1 - 0.5 * Math.min(1, tmp.sleepMix)) * (1 - 0.4 * fx.glare);
+    hemi.current.intensity = 1.25 * light * (1 + 0.5 * fx.glare);
     sun.current.position.set(c.x + sunDir.x * 60, sunDir.y * 60, c.z + sunDir.z * 60);
     sun.current.target.position.set(c.x, 0, c.z);
   });

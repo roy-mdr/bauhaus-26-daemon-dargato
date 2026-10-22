@@ -1,11 +1,12 @@
 // Dargato's intrusive thoughts: one small swarm of particles per sense around the cat.
 // Each swarm moves according to its player's live channels (simulated senses included),
-// and discrete gestures (taps, beats, knocks, flinches) make it flare.
+// and discrete gestures (scratches, shakes, heartbeat taps) make it flare.
 import { useFrame, useThree } from '@react-three/fiber';
 import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
+import { heartPosition } from '../../shared/config';
+import { wrapAngle } from '../../shared/graph';
 import type { PlayerPublic } from '../../shared/protocol';
-import { roleKey } from '../../shared/roles';
 import { hashString } from '../../shared/rng';
 import type { SenseId } from '../../shared/types';
 import { PAL } from './palette';
@@ -16,7 +17,7 @@ const MAX_SWARMS = 20;
 const MAX = PER * MAX_SWARMS;
 const TAU = Math.PI * 2;
 
-const SENSE_SLOT: Record<SenseId, number> = { vision: 0, direction: 1, instinct: 2, emotion: 3, hearing: 4, memory: 5, heartbeat: 6 };
+const SENSE_SLOT: Record<SenseId, number> = { sight: 0, speed: 1, direction: 2, memory: 3, instinct: 4, heartbeat: 5 };
 const SHAPE_DOT = 0;
 const SHAPE_RING = 1;
 
@@ -30,7 +31,6 @@ const C = {
 
 interface Swarm {
   id: string;
-  key: string;
   sense: SenseId;
   slot: number;
   env: number;
@@ -58,9 +58,8 @@ function newSwarm(p: PlayerPublic): Swarm {
   }
   return {
     id: p.id,
-    key: roleKey(p.role),
     sense: p.role.sense,
-    slot: (SENSE_SLOT[p.role.sense] / 7) * TAU + (p.role.variant ? 0.45 : 0) + ((h % 100) / 100 - 0.5) * 0.3,
+    slot: (SENSE_SLOT[p.role.sense] / 6) * TAU + ((h % 100) / 100 - 0.5) * 0.5,
     env: 0,
     alive: true,
     ch: { ...p.ch },
@@ -96,7 +95,14 @@ interface Out {
   stiff: number;
 }
 
-function shape(sw: Swarm, i: number, t: number, o: Out) {
+/** what a swarm needs to know about the world around him this frame */
+interface Ctx {
+  /** direction of home, cat-local (0 = ahead, + = left) */
+  homeA: number;
+  heartBpm: number;
+}
+
+function shape(sw: Swarm, i: number, t: number, o: Out, ctx: Ctx) {
   const u1 = sw.seed[i * 3];
   const u2 = sw.seed[i * 3 + 1];
   const u3 = sw.seed[i * 3 + 2];
@@ -106,156 +112,97 @@ function shape(sw: Swarm, i: number, t: number, o: Out) {
   o.f = -1;
   o.stiff = 10;
   o.shape = SHAPE_DOT;
-  switch (sw.key) {
-    case 'vision':
-    case 'vision-b': {
-      // brightness opens the eyes: wider, higher, clearer rings
+  switch (sw.sense) {
+    case 'sight': {
+      // eyes: dark shrinks the rings to a dim huddle, glare blows them wide and faint
       const v = ch.v ?? 0.5;
+      const glare = Math.max(0, (v - 0.65) / 0.35);
       o.a = sw.slot + (u1 - 0.5) * 1.8 + t * 0.12;
-      o.r = 0.7 + 0.45 * v + u2 * 1.0 * v;
-      o.y = 0.3 + v * 1.15 + 0.2 * wob(t * 0.5, u3);
-      o.size = 0.05 + 0.1 * v;
-      o.alpha = 0.12 + 0.75 * v;
+      o.r = 0.6 + 0.6 * v + u2 * (0.6 + 2.2 * glare);
+      o.y = 0.3 + v * 1.1 + 0.2 * wob(t * 0.5, u3);
+      o.size = 0.05 + 0.1 * v + 0.12 * glare;
+      o.alpha = (0.1 + 0.8 * Math.min(1, v * 1.6)) * (1 - 0.6 * glare);
       o.shape = SHAPE_RING;
-      o.color = sw.key === 'vision' ? C.charcoal : C.redDeep;
+      o.color = C.charcoal;
       o.stiff = 6;
       break;
     }
-    case 'direction':
-    case 'direction-b': {
-      // a stream of thoughts pouring toward the preferred side
+    case 'speed': {
+      // sparks around the paws, spinning and thrown forward by the scratching
+      const d = ch.drive ?? 0;
+      o.a = u1 * TAU + t * (0.3 + 3 * d);
+      o.r = 0.45 + u2 * 0.5 + d * 0.4;
+      o.y = 0.08 + u3 * 0.2 + d * 0.4 * Math.abs(Math.sin(t * 11 + u1 * 20));
+      const j = 0.03 + 0.15 * d;
+      o.ox = j * Math.sin(t * 23 + u2 * 40);
+      o.oz = j * Math.sin(t * 19 + u3 * 40) + d * 0.8;
+      o.size = 0.035 + 0.035 * d;
+      o.alpha = 0.2 + 0.7 * d;
+      o.color = C.black;
+      o.stiff = 22;
+      break;
+    }
+    case 'direction': {
+      // a stream of thoughts pouring toward the side he turns to
       const x = ch.x ?? 0;
       const ax = Math.min(1, Math.abs(x));
       const f = frac(t * (0.25 + 0.45 * ax) + u1);
       o.f = f;
       o.a = -x * 1.45 + (u2 - 0.5) * (1.5 - ax * 1.1);
-      if (sw.key === 'direction-b') o.a += Math.PI * 0.18 * Math.sign(x);
       o.r = 0.9 + f * (0.5 + 2.0 * ax);
       o.y = 0.5 + 0.35 * Math.sin(f * Math.PI) + (u3 - 0.5) * 0.3;
       o.size = 0.055;
       o.alpha = (0.2 + 0.7 * ax) * Math.sin(f * Math.PI);
-      o.color = sw.key === 'direction' ? C.black : C.gray;
+      o.color = C.black;
       o.stiff = 14;
       break;
     }
+    case 'memory': {
+      // remembering: a tidy ring of dust under him; forgetting: it floats up and apart
+      const L = Math.min(1, (ch.level ?? 0) / 0.42);
+      const loose = 1 - L;
+      o.a = (i / PER) * TAU + t * (0.25 + 0.2 * L) + loose * (u1 - 0.5) * 3;
+      o.r = 0.75 + loose * (0.4 + 2.2 * u2);
+      o.y = 0.05 + loose * (0.4 + 1.8 * u3 + 0.3 * wob(t * 0.4, u1));
+      o.size = 0.045 + 0.02 * loose;
+      o.alpha = 0.3 + 0.5 * L;
+      o.color = C.gray;
+      o.stiff = 3 + 6 * L;
+      break;
+    }
     case 'instinct': {
-      // restless sparks around the paws, thrown forward by drive and scratching
+      // red sparks streaming toward home (as the crow flies), shaken loose by the phone
       const d = ch.drive ?? 0;
-      const sc = ch.scratch ?? 0;
-      o.a = u1 * TAU + t * (0.3 + 2.4 * d);
-      o.r = 0.45 + u2 * 0.5 + d * 0.5;
-      o.y = 0.08 + u3 * 0.25 + d * 0.45 * Math.abs(Math.sin(t * 9 + u1 * 20));
-      const j = 0.03 + 0.3 * sc + 0.12 * d;
-      o.ox = j * Math.sin(t * 23 + u2 * 40);
-      o.oz = j * Math.sin(t * 19 + u3 * 40) + d * 0.7;
-      o.size = 0.035 + 0.035 * d;
-      o.alpha = 0.25 + 0.65 * Math.max(d, sc);
-      o.color = C.charcoal;
-      o.stiff = 22;
-      break;
-    }
-    case 'instinct-b': {
-      // restraint: heavy thoughts that cling behind him
-      const d = ch.drive ?? 0;
-      o.a = Math.PI + (u1 - 0.5) * (1.6 - d);
-      o.r = 0.9 - 0.35 * d + u2 * 0.4;
-      o.y = 0.15 + u3 * (0.6 - 0.4 * d);
-      o.size = 0.05 + 0.03 * d;
-      o.alpha = 0.2 + 0.65 * d;
-      o.color = C.gray;
-      o.stiff = 5;
-      break;
-    }
-    case 'emotion': {
-      const calm = ch.calm ?? 0;
-      const cur = ch.curiosity ?? 0;
-      const cau = ch.caution ?? 0;
-      const wb = Math.max(0, 1 - calm - cur - cau);
-      const tot = wb + calm + cur + cau || 1;
-      // loose: a mild cloud
-      let lx = 0, lz = 0, ly = 0;
-      const add = (a: number, r: number, y: number, w: number) => {
-        lx += Math.sin(a) * r * w;
-        lz += Math.cos(a) * r * w;
-        ly += y * w;
-      };
-      add(sw.slot + (u1 - 0.5) * 2 + t * 0.2 + 0.3 * wob(t * 0.3, u2), 1.2 + u2 * 0.6, 0.6 + u3 * 0.8 + 0.2 * wob(t * 0.4, u1), wb / tot);
-      // calm: a still, level halo above his back
-      add(u1 * TAU + t * 0.22, 0.85, 1.15 + 0.03 * Math.sin(u1 * TAU * 3 + t), calm / tot);
-      // curiosity: drifting far ahead
-      add((u1 - 0.5) * 1.9 + 0.4 * wob(t * 0.6, u3), 1.8 + u2 * 1.5, 0.35 + u3 * 1.3 + 0.3 * wob(t * 0.5, u2), cur / tot);
-      // caution: a tight trembling huddle
-      add(u1 * TAU, 0.42 + u2 * 0.15, 0.2 + u3 * 0.35, cau / tot);
-      o.a = 0;
-      o.r = 0;
-      o.ox = lx + cau * 0.04 * Math.sin(t * 31 + u2 * 50);
-      o.oz = lz + cau * 0.04 * Math.sin(t * 27 + u3 * 50);
-      o.y = ly;
-      o.size = 0.05 + 0.02 * calm;
-      o.alpha = 0.22 + 0.65 * Math.max(calm, cur, cau);
-      o.color = C.gray;
-      o.stiff = 4 + 10 * cau;
-      break;
-    }
-    case 'emotion-b': {
-      // rest: the thoughts settle onto the stones around him
-      const rest = ch.rest ?? 0;
-      o.a = u1 * TAU + t * 0.08 * (1 - rest);
-      o.r = 0.7 + u2 * 0.7;
-      o.y = (1 - rest) * (0.5 + u3 * 0.8 + 0.2 * wob(t * 0.4, u1)) + 0.03;
-      o.size = 0.05;
-      o.alpha = 0.2 + 0.6 * rest;
-      o.color = C.gray;
-      o.stiff = 3;
-      break;
-    }
-    case 'hearing':
-    case 'hearing-b': {
-      // listening: rings that widen from his ears
-      const A = ch.acuity ?? 0.25;
-      const far = sw.key === 'hearing-b';
-      const f = frac(t * 0.4 + (i % 3) / 3);
+      const f = frac(t * (0.3 + 0.8 * d) + u1);
       o.f = f;
-      o.a = (i / PER) * TAU * 3 + u2 * 0.4 + sw.slot;
-      o.r = (far ? 1.6 : 0.35) + f * ((far ? 2.0 : 1.0) + 2.0 * A);
-      o.y = 0.78 + (u3 - 0.5) * 0.1;
-      o.size = 0.06 + 0.04 * A;
-      o.alpha = (0.1 + 0.8 * A) * Math.min(1, f * 6) * (1 - f);
-      o.shape = SHAPE_RING;
-      o.color = far ? C.gray : C.charcoal;
-      o.stiff = 30;
-      break;
-    }
-    case 'memory':
-    case 'memory-b': {
-      // red embers rising from his head, louder rooms make more of them
-      const L = ch.level ?? 0.2;
-      const f = frac(t * (0.1 + 0.3 * L) + u1);
-      o.f = f;
-      o.a = sw.slot + (u2 - 0.5) * 1.1;
-      o.r = 0.35 + u3 * 0.5 + f * 0.7;
-      o.y = 0.75 + f * (0.9 + 1.6 * L);
-      o.size = 0.04 + 0.045 * L;
-      o.alpha = (0.2 + 0.7 * L) * Math.sin(f * Math.PI);
-      o.shape = sw.key === 'memory' ? SHAPE_DOT : SHAPE_RING;
+      o.a = ctx.homeA + (u2 - 0.5) * (1.6 - d * 1.2);
+      o.r = 0.5 + f * (0.4 + 2.6 * d);
+      o.y = 0.35 + (u3 - 0.5) * 0.4 + 0.25 * Math.sin(f * Math.PI);
+      const j = 0.02 + 0.1 * d;
+      o.ox = j * Math.sin(t * 37 + u2 * 50);
+      o.oz = j * Math.sin(t * 41 + u3 * 50);
+      o.size = 0.04 + 0.04 * d;
+      o.alpha = (0.1 + 0.85 * d) * Math.sin(f * Math.PI);
       o.color = C.red;
-      o.stiff = 8;
+      o.stiff = 16;
       break;
     }
     default: {
-      // heartbeat: a small red throb at his chest, in time with the vignette
-      const q = ch.quality ?? 0;
-      const b = Math.pow(Math.max(0, Math.sin(t * TAU * 1.1)), 10);
+      // heartbeat: a red throb at his chest, at the rate it is tapped; off the beat it stutters
+      const bpm = ch.bpm ?? 0;
+      const pos = heartPosition(bpm, ctx.heartBpm);
+      const off = Math.max(0, Math.abs(pos) - 0.3) / 0.7;
+      const b = bpm > 0 ? Math.pow(Math.max(0, Math.cos(t * TAU * (bpm / 60))), 10) : 0;
       const th = u1 * TAU;
       const ph = Math.acos(2 * u2 - 1);
-      const r = 0.3 + 0.18 * b * (0.3 + q);
+      const r = 0.3 + 0.18 * b + off * 0.08 * Math.sin(t * 29 + u3 * 30);
       o.a = 0;
       o.r = 0;
       o.ox = Math.sin(th) * Math.sin(ph) * r;
       o.oz = 0.2 + Math.cos(th) * Math.sin(ph) * r;
       o.y = 0.55 + Math.cos(ph) * r;
-      o.size = 0.035 + 0.03 * b;
-      o.alpha = 0.12 + 0.7 * q * (0.5 + 0.5 * b);
+      o.size = 0.035 + 0.035 * b;
+      o.alpha = 0.15 + 0.7 * (0.4 + 0.6 * b) * (1 - 0.5 * off);
       o.color = C.redDeep;
       o.stiff = 40;
     }
@@ -358,7 +305,7 @@ export function Thoughts() {
     for (const sw of map.values()) sw.alive = false;
     for (const p of snap?.players ?? []) {
       let sw = map.get(p.id);
-      if (sw && roleKey(p.role) !== sw.key) {
+      if (sw && p.role.sense !== sw.sense) {
         map.delete(p.id);
         sw = undefined;
       }
@@ -381,6 +328,8 @@ export function Thoughts() {
     const carry = 0.85;
     const cosH = Math.cos(cat.heading);
     const sinH = Math.sin(cat.heading);
+    const home = store.world?.nodes[store.world.home];
+    const ctx: Ctx = { homeA: home ? wrapAngle(Math.atan2(home.x - cat.x, home.z - cat.z) - cat.heading) : 0, heartBpm: snap?.heartBpm ?? 72 };
 
     let n = 0;
     for (const [id, sw] of map) {
@@ -398,7 +347,7 @@ export function Thoughts() {
       if (kick) sw.imp = 0.999;
 
       for (let i = 0; i < PER; i++) {
-        shape(sw, i, t, out);
+        shape(sw, i, t, out, ctx);
         const lx = Math.sin(out.a) * out.r + out.ox;
         const lz = Math.cos(out.a) * out.r + out.oz;
         // local (lateral +left, forward) -> world

@@ -4,9 +4,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { Snapshot } from '../../shared/protocol';
 import { graphFingerprint } from '../../shared/graph';
 import { generateWorld, validateWorld } from '../../shared/worldgen';
-import { Bar, OptionsTable, useDirectorSocket } from '../director/DirectorApp';
+import { Bar, useDirectorSocket } from '../director/DirectorApp';
 import { MapView } from '../director/MapView';
-import { CameraLuminance, MicListener, TiltSensor, keepAwake, secureContext, vibrate } from '../phone/sensors';
+import { CameraLuminance, MicListener, ShakeSensor, TiltSensor, keepAwake, secureContext, vibrate } from '../phone/sensors';
 
 export default function DebugApp() {
   const d = useDirectorSocket('debug');
@@ -107,14 +107,13 @@ export default function DebugApp() {
               <h2>Aggregated influences (server)</h2>
               <div className="bars">
                 {Object.entries(s.aggregated).map(([k, v]) => (
-                  <Bar key={k} label={k} value={v} min={k === 'dir' || k === 'explore' ? -1 : 0} max={k === 'redGain' || k === 'soundGain' ? 2 : 1} />
+                  <Bar key={k} label={k} value={v} min={k === 'turn' ? -1 : 0} max={k === 'heartRate' ? 160 : 1} />
                 ))}
               </div>
               <h2>Cat</h2>
               <p className="small">
                 {s.cat.state} · ({s.cat.x.toFixed(1)}, {s.cat.z.toFixed(1)}) · speed {s.cat.speed.toFixed(2)} · {s.diagnostics.distanceToHome}u to home
               </p>
-              {s.options.length > 0 && <OptionsTable options={s.options} />}
               {d.world && <MapView world={d.world} state={s} />}
             </>
           )}
@@ -147,14 +146,15 @@ function DeviceTests() {
   const [cam, setCam] = useState<string>('-');
   const [mic, setMic] = useState<string>('-');
   const [tilt, setTilt] = useState<string>('-');
-  const [onsets, setOnsets] = useState(0);
+  const [shake, setShake] = useState<string>('-');
   const [wake, setWake] = useState('-');
-  const refs = useRef<{ cam?: CameraLuminance; mic?: MicListener; tilt?: TiltSensor }>({});
+  const refs = useRef<{ cam?: CameraLuminance; mic?: MicListener; tilt?: TiltSensor; shake?: ShakeSensor }>({});
   useEffect(
     () => () => {
       refs.current.cam?.stop();
       refs.current.mic?.stop();
       refs.current.tilt?.stop();
+      refs.current.shake?.stop();
     },
     [],
   );
@@ -183,8 +183,6 @@ function DeviceTests() {
           onClick={async () => {
             const m = new MicListener();
             m.onLevel = (v) => setMic(`level ${v.toFixed(3)} · floor ${m.floorDb.toFixed(1)} dB${m.isCalibrating ? ' (calibrating)' : ''}`);
-            m.onOnset = () => setOnsets((n) => n + 1);
-            m.onRhythm = (bpm, reg) => setMic(`RHYTHM ${bpm.toFixed(0)} bpm, regularity ${reg.toFixed(2)}`);
             const r = await m.start();
             setMic(r);
             refs.current.mic = m;
@@ -192,9 +190,7 @@ function DeviceTests() {
         >
           test microphone
         </button>
-        <span>
-          {mic} · onsets {onsets}
-        </span>
+        <span>{mic}</span>
       </div>
       <div className="row">
         <button
@@ -209,6 +205,20 @@ function DeviceTests() {
           test motion
         </button>
         <span>{tilt}</span>
+      </div>
+      <div className="row">
+        <button
+          onClick={async () => {
+            const sh = new ShakeSensor();
+            sh.onValue = (v) => setShake(`shake ${v.toFixed(2)}`);
+            const r = await sh.start();
+            if (r !== 'active') setShake(r);
+            refs.current.shake = sh;
+          }}
+        >
+          test shaking
+        </button>
+        <span>{shake}</span>
       </div>
       <div className="row">
         <button onClick={() => vibrate([60, 60, 60])}>test vibration</button>

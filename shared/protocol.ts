@@ -1,17 +1,17 @@
 // Messages between server, main display, phones, director and debug clients.
 import type { SessionConfig } from './config';
-import type { CatInternals, CatState, Hint, OptionScore, Phase, RoleRef, SenseId, World, WorldEvent } from './types';
+import type { CatInternals, CatState, Phase, RoleRef, SenseId, World, WorldEvent } from './types';
 
 /** normalized phone input; raw sensor data never leaves the phone */
 export type PhoneInput =
+  /** SIGHT brightness 0..1, DIRECTION tilt -1..1, MEMORY loudness 0..1 */
   | { t: 'value'; v: number }
+  /** HEARTBEAT */
   | { t: 'tap' }
+  /** SPEED: top-to-bottom scratching intensity 0..1 */
   | { t: 'scratch'; v: number }
-  | { t: 'hold'; on: boolean }
-  | { t: 'flinch' }
-  | { t: 'beat'; acc: number }
-  | { t: 'onset'; v: number }
-  | { t: 'rhythm'; bpm: number; reg: number };
+  /** INSTINCT: shaking (or side-to-side scratching) intensity 0..1 */
+  | { t: 'shake'; v: number };
 
 export interface SensorStatus {
   sensor: string;
@@ -35,7 +35,7 @@ export interface PlayerPublic {
   influence: number;
   /** current output channels (rounded), e.g. { calm, curiosity, caution } */
   ch: Record<string, number>;
-  /** running count of discrete gestures (taps, beats, knocks, flinches, holds) */
+  /** running count of discrete gestures (taps, scratches, shakes) */
   pulses: number;
 }
 
@@ -46,6 +46,8 @@ export interface CatSnapshot {
   state: CatState;
   speed: number;
   look: [number, number] | null;
+  /** how fast the paws move (m/s equivalent), even when there is no path to walk on */
+  paws: number;
   edge: number;
   from: number;
   to: number;
@@ -67,18 +69,22 @@ export interface Snapshot {
   paused: boolean;
   cat: CatSnapshot;
   inner: CatInternals;
-  hints: Hint[];
-  options: OptionScore[];
+  /** the shortest way home from where he stands (edge ids, current street first) */
   planned: number[];
   homeReveal: number;
-  extension: number;
+  /** the pulse HEARTBEAT players tap along with */
+  heartBpm: number;
   players: PlayerPublic[];
   realPlayers: number;
-  render: { fog: number; light: number; hintVisibility: number; whispers: boolean; keyboard: boolean };
+  render: { fog: number; light: number; whispers: boolean; keyboard: boolean };
   autoStartIn: number;
   ending: null | 'home' | 'sleep';
+  endCause: EndCause | null;
   summary: JourneySummary | null;
 }
+
+/** why the journey ended: home, or the night ended (heart too slow / too fast, or out of time) */
+export type EndCause = 'home' | 'slow' | 'fast' | 'time';
 
 export interface PlayerSummary {
   playerId: string;
@@ -86,20 +92,19 @@ export interface PlayerSummary {
   roleName: string;
   objective: string;
   done: boolean;
-  /** decisions where this player's sense tipped the choice */
-  decisive: number;
   inputs: number;
   line: string;
 }
 
 export interface JourneySummary {
   ending: 'home' | 'sleep';
+  cause: EndCause;
   durationSec: number;
   distance: number;
-  junctions: number;
+  streets: number;
   detours: number;
-  hintsSeen: number;
-  memories: number;
+  discoveries: number;
+  landmarks: number;
   players: PlayerSummary[];
 }
 
@@ -117,12 +122,10 @@ export interface PhoneState {
   players: number;
   /** role-specific cues */
   cue: {
-    approaching: boolean;
-    /** -1 left, 0 ahead, 1 right: where the pulse / sound is (HEARING) */
-    side: number;
-    tempo: number;
-    cooldown: number;
+    /** the sense's effect on Dargato right now (heartbeat: the slider, -1..1) */
     level: number;
+    /** the pulse on the big screen (bpm) */
+    tempo: number;
   };
   feedback: string;
   sensitivity: number;
@@ -138,11 +141,8 @@ export interface DirectorState {
   journeyT: number;
   remaining: number;
   hardRemaining: number;
-  extension: number;
   cat: CatSnapshot;
   inner: CatInternals;
-  options: OptionScore[];
-  lastDecisions: { t: number; node: number; chosen: number; terms: Record<string, number>; decisive: string; margin: number }[];
   planned: number[];
   players: PlayerPublic[];
   aggregated: Record<string, number>;
@@ -154,7 +154,6 @@ export interface DirectorState {
     bestDistanceToHome: number;
     progress: number;
     visitedEdges: number;
-    decisions: number;
     detours: number;
     estDurationSec: number;
     worldStats: World['stats'];
@@ -172,13 +171,11 @@ export type DirectorCommand =
   | { c: 'setSeed'; seed: string }
   | { c: 'regenerate'; seed?: string }
   | { c: 'config'; patch: Partial<SessionConfig> }
-  | { c: 'hint'; edge?: number }
-  | { c: 'memory' }
   | { c: 'event'; kind: string }
   | { c: 'teleport'; node: number }
   | { c: 'ending'; kind: 'home' | 'sleep' }
   | { c: 'kick'; playerId: string }
-  | { c: 'reassign'; playerId: string; sense: SenseId; variant: boolean }
+  | { c: 'reassign'; playerId: string; sense: SenseId }
   | { c: 'bots'; count: number }
   | { c: 'debugOverlay'; on: boolean };
 

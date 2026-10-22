@@ -1,10 +1,8 @@
 // Synthesized, spatial-ish sound for the main display: wind, distant hum,
-// soft footsteps, familiar memory motifs, sounds from alleys, cats of home.
+// soft footsteps, the heartbeat pulse, sounds from alleys, cats of home.
 import { clamp, wrapAngle } from '../../shared/graph';
 import type { WorldEvent } from '../../shared/types';
-import { store } from './store';
-
-const MOTIF = [659.25, 783.99, 987.77, 880, 783.99]; // E5 G5 B5 A5 G5
+import { serverNow, store } from './store';
 
 export class DisplayAudio {
   ctx: AudioContext | null = null;
@@ -14,9 +12,8 @@ export class DisplayAudio {
   private wind!: GainNode;
   private windFilter!: BiquadFilterNode;
   private purr!: GainNode;
-  private hintTone = 0;
   private stepAcc = 0;
-  private beatAcc = 0;
+  private beatPh = 0;
   private heardEvents = new Set<number>();
   private lastPhase = '';
   enabled = false;
@@ -173,20 +170,6 @@ export class DisplayAudio {
     this.heardEvents.add(ev.id);
     const t = this.ctx.currentTime + 0.02;
     switch (ev.kind) {
-      case 'memory-sound':
-      case 'memory-flash': {
-        const out = this.bus(ev.x, ev.z, 0.5 * (0.6 + ev.strength * 0.4));
-        const notes = ev.kind === 'memory-flash' ? MOTIF : MOTIF.slice(0, 3);
-        notes.forEach((f, i) => this.tone(f, t + i * 0.32, 1.2, 0.22, out, 'sine'));
-        notes.forEach((f, i) => this.tone(f * 2.005, t + i * 0.32, 0.5, 0.05, out, 'sine'));
-        break;
-      }
-      case 'familiar-sound': {
-        const out = this.bus(ev.x, ev.z, 0.35);
-        this.tone(880, t, 2.4, 0.2, out);
-        this.tone(1318, t, 1.6, 0.08, out);
-        break;
-      }
       case 'distant-red-light': {
         const out = this.bus(ev.x, ev.z, 0.6);
         const ctx = this.ctx;
@@ -237,16 +220,17 @@ export class DisplayAudio {
     }
   }
 
-  /** per frame: footsteps, heartbeat, wind, sound-hint presence, phase cues */
+  /** per frame: footsteps, heartbeat, wind, phase cues */
   update(dt: number) {
     if (!this.ctx || !this.enabled) return;
     const snap = store.latest;
     const c = store.cat;
     if (!snap) return;
     const now = this.ctx.currentTime;
-    // wind breathes slowly, stronger with fog
+    const fx = store.fx;
+    // wind breathes slowly; glare and darkness make it louder
     this.windFilter.frequency.value = 380 + Math.sin(now * 0.13) * 120;
-    this.wind.gain.value = 0.03 + (1 - snap.inner.perception) * 0.05;
+    this.wind.gain.value = 0.03 + fx.glare * 0.05 + (1 - fx.light) * 0.03;
     // footsteps
     if (c.speed > 0.2) {
       this.stepAcc += dt * c.speed * 1.9;
@@ -255,36 +239,20 @@ export class DisplayAudio {
         this.noiseBurst(now, 0.05, 0.035, 2500, this.master);
       }
     }
-    // heartbeat sense
-    if (snap.inner.heartbeat > 0.25) {
-      this.beatAcc += dt;
-      if (this.beatAcc > 0.9) {
-        this.beatAcc = 0;
-        const v = 0.15 * snap.inner.heartbeat;
-        this.tone(58, now, 0.18, v, this.master, 'sine', 40);
-        this.tone(55, now + 0.22, 0.2, v * 0.7, this.master, 'sine', 38);
-      }
+    // the pulse on screen, as a soft double thump; louder while his heart is under strain
+    const ph = (((serverNow() / 1000) * snap.heartBpm) / 60) % 1;
+    if (ph < this.beatPh && (snap.phase === 'journey' || snap.phase === 'lobby')) {
+      const v = 0.05 + 0.18 * fx.strain;
+      this.tone(58, now, 0.18, v, this.master, 'sine', 40);
+      this.tone(55, now + 0.22, 0.2, v * 0.7, this.master, 'sine', 38);
     }
-    // an audible thread toward the strongest sound hint (louder with HEARING)
-    const sounds = snap.hints.filter((h) => h.kind === 'sound');
-    this.hintTone -= dt;
-    if (sounds.length && this.hintTone <= 0 && store.world) {
-      const h = sounds.reduce((a, b) => (b.visible > a.visible ? b : a));
-      this.hintTone = 1.7;
-      if (h.visible > 0.12) {
-        const n = store.world.nodes[h.nodeId];
-        const e = store.world.edges[h.edgeId];
-        const p = e.points[e.a === n.id ? Math.min(e.points.length - 1, 1) : Math.max(0, e.points.length - 2)];
-        const out = this.bus(p.x, p.z, Math.min(0.5, h.visible * 0.45));
-        this.tone(h.source === 'memory' ? MOTIF[0] : 988, now, 0.9, 0.15, out, 'triangle');
-      }
-    }
+    this.beatPh = ph;
     // purring and the cats of home come closer
     if (store.world) {
       const home = store.world.nodes[store.world.home];
       const d = Math.hypot(home.x - c.x, home.z - c.z);
       const arriving = snap.phase === 'arrival' || (snap.phase === 'summary' && snap.ending === 'home');
-      this.purr.gain.value = arriving ? 0.5 : clamp(1 - d / 60) * 0.25 + snap.inner.farHearing * 0.1;
+      this.purr.gain.value = arriving ? 0.5 : clamp(1 - d / 60) * 0.25;
     }
     if (snap.phase !== this.lastPhase) {
       this.lastPhase = snap.phase;
