@@ -129,7 +129,7 @@ Players can join mid-journey. Every player also gets a small secret wish (for ex
 
 ## How a journey works
 
-lobby → intro (6 s) → journey → **arrival** (home: a red space where other cats wait) or
+lobby → intro (6 s) → journey → **arrival** (home: an open field of red dots where other cats wait; he has arrived once he is well inside it) or
 **sleep** (the night ends) → summary → back to the lobby with a new world (unless the seed is locked).
 
 - Dargato moves freely: he does not stop at junctions, and he can turn at any moment. He
@@ -174,7 +174,7 @@ server/   index (HTTP + Socket.IO), session (lifecycle, aggregation, director),
           cat (free movement inside the streets, small reactions), narrative (environmental events), objectives
 src/display  R3F scene: cityLayout (building footprints around the graph), WorldMesh (solids that ground or float with MEMORY),
              StreetParticles (streets as particle paths; MEMORY scatter, INSTINCT red route), CatFigure,
-             Home, Signs (events), Thoughts (sense particles), Scene (camera, fog, light, debug), audio (WebAudio)
+             Home (red dot field), Signs (events), Thoughts (sense particles), Scene (camera, fog, light, debug), audio (WebAudio)
 src/phone    PhoneApp, controls (one per sense), sensors (camera/mic/tilt/shake, local only)
 src/director DirectorApp, MapView
 src/debug    DebugApp

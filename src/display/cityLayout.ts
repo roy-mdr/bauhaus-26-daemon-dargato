@@ -2,6 +2,7 @@
 // facades lining the streets, back buildings filling the blocks, sparse street
 // furniture. Seeded so a seed looks the same each time, but purely cosmetic:
 // nothing here can block or alter the navigation graph.
+import { homeField } from '../../shared/config';
 import { Rng } from '../../shared/rng';
 import { leaveHeading, sampleEdge } from '../../shared/graph';
 import type { World } from '../../shared/types';
@@ -83,7 +84,8 @@ export function buildCityLayout(world: World): CityLayout {
   for (const nd of world.nodes) cor.add({ x: nd.x, z: nd.z, r: nd.r + 0.8 });
   for (const l of world.landmarks) cor.add({ x: l.x, z: l.z, r: 1.6 });
   const home = world.nodes[world.home];
-  cor.add({ x: home.x, z: home.z, r: home.r + 3 });
+  // home is an open field: no buildings across it
+  cor.add({ x: home.x, z: home.z, r: homeField(home.r).radius });
 
   const buildings: Box[] = [];
   const doors: Box[] = [];
@@ -193,5 +195,7 @@ export function buildCityLayout(world: World): CityLayout {
       tryPlace(b, 0.3);
     }
   }
-  return { buildings, doors, lamps, bollards, benches, fences };
+  // nothing stands in the home field
+  const open = (o: { x: number; z: number }) => Math.hypot(o.x - home.x, o.z - home.z) > homeField(home.r).radius;
+  return { buildings, doors: doors.filter(open), lamps: lamps.filter(open), bollards: bollards.filter(open), benches: benches.filter(open), fences: fences.filter(open) };
 }

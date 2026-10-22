@@ -1,6 +1,7 @@
 // Dargato's body in the street: free movement steered by the senses, held inside
 // the street corridors, plus his small autonomous reactions. Server-authoritative.
 import { astar, clamp, leaveHeading, sampleEdge, wrapAngle } from '../shared/graph';
+import { homeField } from '../shared/config';
 import { Rng } from '../shared/rng';
 import type { CatInternals, CatState, DiscoveryKind, Landmark, World } from '../shared/types';
 import type { CatSnapshot } from '../shared/protocol';
@@ -324,7 +325,9 @@ export class CatSim {
   }
 
   private senseSurroundings(dt: number) {
-    if (this.node === this.world.home) {
+    // home is an open field: he has arrived once he is well inside it
+    const home = this.world.nodes[this.world.home];
+    if (this.node === this.world.home || Math.hypot(this.x - home.x, this.z - home.z) < homeField(home.r).arrive) {
       this.state = 'arriving';
       this.speed = 0;
       this.hooks.onHome();

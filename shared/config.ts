@@ -66,3 +66,8 @@ export function heartPosition(bpm: number, target: number): number {
 
 /** |heart| below this counts as "on the beat" */
 export const HEART_ZONE = 0.3;
+
+/** home is an open field of red dots around the home node: how far it spreads, and how deep in he has arrived */
+export function homeField(r: number): { radius: number; arrive: number } {
+  return { radius: r + 16, arrive: r + 5 };
+}

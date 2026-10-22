@@ -6,6 +6,7 @@
 import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
+import { homeField } from '../../shared/config';
 import { sampleEdge } from '../../shared/graph';
 import { Rng } from '../../shared/rng';
 import type { EdgeKind, World } from '../../shared/types';
@@ -124,6 +125,7 @@ const vertexShader = /* glsl */ `
   uniform float uRed;
   uniform sampler2D uRoute;
   uniform float uRouteN;
+  uniform vec3 uHome; // x, z, field radius
   varying float vAlpha;
   varying float vShade;
   varying float vDepth;
@@ -164,7 +166,9 @@ const vertexShader = /* glsl */ `
     vAlpha = alpha;
     vShade = aShade;
     vDepth = -mv.z;
-    vRed = red;
+    // close to home the dust melts into its red field
+    float home = smoothstep(uHome.z, uHome.z * 0.4, length(position.xz - uHome.xy));
+    vRed = max(red, home * 0.9);
   }
 `;
 
@@ -215,6 +219,7 @@ export function StreetParticles({ world }: { world: World }) {
           uRed: { value: 0 },
           uRoute: { value: null },
           uRouteN: { value: 1 },
+          uHome: { value: new THREE.Vector3() },
           uPale: { value: new THREE.Color('#9a9893') },
           uDark: { value: new THREE.Color(PAL.black) },
           uRedColor: { value: new THREE.Color('#e3261c') },
@@ -227,8 +232,10 @@ export function StreetParticles({ world }: { world: World }) {
   useEffect(() => {
     mat.uniforms.uRoute.value = routeTex;
     mat.uniforms.uRouteN.value = routeTex.image.width;
+    const home = world.nodes[world.home];
+    mat.uniforms.uHome.value.set(home.x, home.z, homeField(home.r).radius);
     return () => routeTex.dispose();
-  }, [mat, routeTex]);
+  }, [mat, routeTex, world]);
   const lastRoute = useRef('');
   useFrame((state) => {
     const cam = state.camera as THREE.PerspectiveCamera;
