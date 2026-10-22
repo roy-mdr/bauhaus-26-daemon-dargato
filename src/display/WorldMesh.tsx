@@ -1,116 +1,134 @@
-// Builds the visible town around the navigation graph.
+// Builds the visible town around the navigation graph: not pavement and facades,
+// but floating solids where the buildings would be, and particle paths for streets.
 import { useFrame } from '@react-three/fiber';
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { sampleEdge } from '../../shared/graph';
-import type { EdgeKind, Landmark, World } from '../../shared/types';
-import { buildCityLayout, type Box } from './cityLayout';
+import { Rng } from '../../shared/rng';
+import type { Landmark, World } from '../../shared/types';
+import { buildCityLayout, type CityLayout } from './cityLayout';
 import { PAL } from './palette';
 import { store } from './store';
 import { CatFigure, newPose } from './CatFigure';
+import { StreetParticles } from './StreetParticles';
 
-const KIND_COLOR: Record<EdgeKind, string> = { main: PAL.main, street: PAL.street, alley: PAL.alley, path: PAL.path };
-const KIND_Y: Record<EdgeKind, number> = { main: 0.03, street: 0.032, alley: 0.034, path: 0.036 };
+type Shape = 'box' | 'cylinder' | 'prism' | 'sphere';
+const SHAPES: Shape[] = ['box', 'cylinder', 'prism', 'sphere'];
 
-class GeoBuilder {
-  pos: number[] = [];
-  col: number[] = [];
-  private c = new THREE.Color();
-  tri(a: number[], b: number[], c: number[], color: string) {
-    this.c.set(color);
-    // callers give clockwise-from-above order; emit counter-clockwise so faces point up
-    this.pos.push(...a, ...c, ...b);
-    for (let i = 0; i < 3; i++) this.col.push(this.c.r, this.c.g, this.c.b);
-  }
-  build(): THREE.BufferGeometry {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
-    g.computeVertexNormals();
-    return g;
-  }
+/** one floating solid; y is the bottom at rest */
+interface Piece {
+  x: number;
+  z: number;
+  y: number;
+  sx: number;
+  sy: number;
+  sz: number;
+  rot: number;
+  color: string;
+  phase: number;
+  amp: number;
+  speed: number;
+  sway: number;
 }
 
-function ribbon(gb: GeoBuilder, pts: { x: number; z: number }[], width: number, y: number, color: string) {
-  const hw = width / 2;
-  const left: number[][] = [];
-  const right: number[][] = [];
-  for (let i = 0; i < pts.length; i++) {
-    const p0 = pts[Math.max(0, i - 1)];
-    const p1 = pts[Math.min(pts.length - 1, i + 1)];
-    const dx = p1.x - p0.x;
-    const dz = p1.z - p0.z;
-    const L = Math.hypot(dx, dz) || 1;
-    const nx = -dz / L;
-    const nz = dx / L;
-    left.push([pts[i].x + nx * hw, y, pts[i].z + nz * hw]);
-    right.push([pts[i].x - nx * hw, y, pts[i].z - nz * hw]);
+const unitGeo: Record<Shape, THREE.BufferGeometry> = {
+  box: new THREE.BoxGeometry(1, 1, 1),
+  cylinder: new THREE.CylinderGeometry(0.5, 0.5, 1, 28),
+  prism: new THREE.CylinderGeometry(0.58, 0.58, 1, 3),
+  sphere: new THREE.SphereGeometry(0.5, 24, 16),
+};
+
+const buildingColor = (shade: number) => PAL.buildings[Math.min(PAL.buildings.length - 1, Math.floor(shade * PAL.buildings.length))];
+
+/**
+ * Turns the cosmetic city layout into floating pieces. Footprints only shrink, so
+ * nothing ever reaches into a street corridor.
+ */
+function buildPieces(world: World, layout: CityLayout): Record<Shape, Piece[]> {
+  const rng = new Rng('abstract:' + world.seed);
+  const out: Record<Shape, Piece[]> = { box: [], cylinder: [], prism: [], sphere: [] };
+  const motion = (amp: number) => ({ phase: rng.range(0, Math.PI * 2), amp, speed: rng.range(0.22, 0.55), sway: rng.chance(0.4) ? rng.range(0.01, 0.05) : 0 });
+
+  for (const b of layout.buildings) {
+    const r = rng.next();
+    const shape: Shape = r < 0.66 ? 'box' : r < 0.8 ? 'cylinder' : r < 0.93 ? 'prism' : 'sphere';
+    const shrink = rng.range(0.68, 0.92);
+    const lift = rng.range(1.2, 4.2);
+    if (shape === 'sphere') {
+      const d = Math.min(b.sx, b.sz) * shrink;
+      out.sphere.push({ x: b.x, z: b.z, y: lift, sx: d, sy: d, sz: d, rot: b.rot, color: buildingColor(b.shade), ...motion(rng.range(0.15, 0.4)) });
+      continue;
+    }
+    // tall buildings break into a few stacked pieces with air between them
+    const total = b.sy * rng.range(0.55, 0.95);
+    const parts = total > 11 ? rng.int(1, 3) : total > 5 ? rng.int(1, 2) : 1;
+    let y = lift;
+    for (let i = 0; i < parts; i++) {
+      const h = (total / parts) * rng.range(0.7, 1.15);
+      const k = i === 0 ? 1 : rng.range(0.7, 1);
+      const s: Shape = i === 0 ? shape : rng.chance(0.8) ? 'box' : shape;
+      const round = s !== 'box';
+      const d = Math.min(b.sx, b.sz);
+      out[s].push({
+        x: b.x,
+        z: b.z,
+        y,
+        sx: (round ? d : b.sx) * shrink * k,
+        sy: h,
+        sz: (round ? d : b.sz) * shrink * k,
+        rot: b.rot + rng.range(-0.12, 0.12),
+        color: buildingColor(Math.min(0.999, Math.max(0, b.shade + rng.range(-0.15, 0.15)))),
+        ...motion(rng.range(0.08, 0.2) * (i + 1)),
+      });
+      y += h + rng.range(0.9, 2.4);
+    }
   }
-  for (let i = 0; i < pts.length - 1; i++) {
-    gb.tri(left[i], right[i], left[i + 1], color);
-    gb.tri(right[i], right[i + 1], left[i + 1], color);
+  // walls along alleys and benches on squares become thin floating plates
+  for (const f of layout.fences) {
+    out.box.push({ x: f.x, z: f.z, y: rng.range(0.35, 0.8), sx: 0.12, sy: f.sy * 0.8, sz: f.sz * 0.9, rot: f.rot, color: PAL.wall, ...motion(rng.range(0.05, 0.12)) });
   }
+  for (const bn of layout.benches) {
+    out.box.push({ x: bn.x, z: bn.z, y: rng.range(0.5, 0.9), sx: 1.8, sy: 0.08, sz: 0.45, rot: bn.rot + Math.PI / 2, color: PAL.charcoal, ...motion(0.06) });
+  }
+  return out;
 }
 
-function disc(gb: GeoBuilder, x: number, z: number, r: number, y: number, color: string, seg = 28) {
-  for (let i = 0; i < seg; i++) {
-    const a0 = (i / seg) * Math.PI * 2;
-    const a1 = ((i + 1) / seg) * Math.PI * 2;
-    gb.tri([x, y, z], [x + Math.sin(a1) * r, y, z + Math.cos(a1) * r], [x + Math.sin(a0) * r, y, z + Math.cos(a0) * r], color);
-  }
-}
-
-function useInstances(ref: React.RefObject<THREE.InstancedMesh | null>, boxes: Box[], colorFn?: (b: Box) => string) {
+function FloatingSet({ shape, pieces }: { shape: Shape; pieces: Piece[] }) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const tmp = useMemo(() => ({ m: new THREE.Matrix4(), q: new THREE.Quaternion(), e: new THREE.Euler(), p: new THREE.Vector3(), s: new THREE.Vector3() }), []);
   useLayoutEffect(() => {
     const m = ref.current;
     if (!m) return;
-    const mat = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const up = new THREE.Vector3(0, 1, 0);
     const c = new THREE.Color();
-    boxes.forEach((b, i) => {
-      q.setFromAxisAngle(up, b.rot);
-      mat.compose(new THREE.Vector3(b.x, b.y + b.sy / 2, b.z), q, new THREE.Vector3(b.sx, b.sy, b.sz));
-      m.setMatrixAt(i, mat);
-      if (colorFn) {
-        c.set(colorFn(b));
-        m.setColorAt(i, c);
-      }
+    pieces.forEach((pc, i) => m.setColorAt(i, c.set(pc.color)));
+    if (m.instanceColor) m.instanceColor.needsUpdate = true;
+  }, [pieces]);
+  // slow, independent bobbing: the town breathes
+  useFrame((state) => {
+    const m = ref.current;
+    if (!m) return;
+    const t = state.clock.elapsedTime;
+    pieces.forEach((pc, i) => {
+      const w = t * pc.speed + pc.phase;
+      tmp.p.set(pc.x, pc.y + pc.sy / 2 + Math.sin(w) * pc.amp, pc.z);
+      tmp.e.set(Math.sin(w * 0.7) * pc.sway, pc.rot + Math.sin(w * 0.5) * pc.sway, Math.cos(w * 0.6) * pc.sway);
+      tmp.q.setFromEuler(tmp.e);
+      tmp.m.compose(tmp.p, tmp.q, tmp.s.set(pc.sx, pc.sy, pc.sz));
+      m.setMatrixAt(i, tmp.m);
     });
     m.instanceMatrix.needsUpdate = true;
-    if (m.instanceColor) m.instanceColor.needsUpdate = true;
-    m.computeBoundingSphere();
-  }, [ref, boxes, colorFn]);
+  });
+  if (!pieces.length) return null;
+  return (
+    <instancedMesh ref={ref} args={[unitGeo[shape], undefined, pieces.length]} castShadow receiveShadow frustumCulled={false}>
+      <meshStandardMaterial roughness={0.9} flatShading={shape === 'box' || shape === 'prism'} />
+    </instancedMesh>
+  );
 }
-
-const unitBox = new THREE.BoxGeometry(1, 1, 1);
 
 export function WorldMesh({ world }: { world: World }) {
   const layout = useMemo(() => buildCityLayout(world), [world]);
-  const streets = useMemo(() => {
-    const gb = new GeoBuilder();
-    for (const e of world.edges) {
-      const pts = e.points.length > 2 ? e.points : [e.points[0], e.points[1]];
-      if (e.kind === 'main' || e.kind === 'street') ribbon(gb, pts, e.width + 2.2, 0.018, PAL.sidewalk);
-      ribbon(gb, pts, e.width, KIND_Y[e.kind], KIND_COLOR[e.kind]);
-    }
-    for (const n of world.nodes) {
-      if (n.id === world.home) continue;
-      const maxW = Math.max(...n.edges.map((eid) => world.edges[eid].width));
-      const hasWide = n.edges.some((eid) => ['main', 'street'].includes(world.edges[eid].kind));
-      if (hasWide) disc(gb, n.x, n.z, n.r + 1.1, 0.02, PAL.sidewalk);
-      disc(gb, n.x, n.z, n.kind === 'plaza' ? n.r : Math.max(n.r, maxW / 2 + 0.3), 0.038, n.kind === 'plaza' ? PAL.plaza : PAL.street);
-    }
-    return gb.build();
-  }, [world]);
-
-  const bRef = useRef<THREE.InstancedMesh>(null);
-  const dRef = useRef<THREE.InstancedMesh>(null);
-  const fRef = useRef<THREE.InstancedMesh>(null);
-  const bColor = useMemo(() => (b: Box) => PAL.buildings[Math.min(PAL.buildings.length - 1, Math.floor(b.shade * PAL.buildings.length))], []);
-  useInstances(bRef, layout.buildings, bColor);
-  useInstances(dRef, layout.doors);
-  useInstances(fRef, layout.fences, () => PAL.wall);
+  const pieces = useMemo(() => buildPieces(world, layout), [world, layout]);
 
   const b = world.stats.bounds;
   const cx = (b.minX + b.maxX) / 2;
@@ -119,27 +137,16 @@ export function WorldMesh({ world }: { world: World }) {
 
   return (
     <group>
+      {/* a pale, almost empty floor that only catches shadows */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cx, 0, cz]} receiveShadow>
         <planeGeometry args={[size, size]} />
         <meshStandardMaterial color={PAL.ground} roughness={1} />
       </mesh>
-      <mesh geometry={streets} receiveShadow>
-        <meshStandardMaterial vertexColors roughness={0.95} />
-      </mesh>
-      <instancedMesh ref={bRef} args={[unitBox, undefined, layout.buildings.length]} castShadow receiveShadow>
-        <meshStandardMaterial roughness={0.95} flatShading />
-      </instancedMesh>
-      {layout.doors.length > 0 && (
-        <instancedMesh ref={dRef} args={[unitBox, undefined, layout.doors.length]}>
-          <meshStandardMaterial color={PAL.charcoal} roughness={1} />
-        </instancedMesh>
-      )}
-      {layout.fences.length > 0 && (
-        <instancedMesh ref={fRef} args={[unitBox, undefined, layout.fences.length]} castShadow receiveShadow>
-          <meshStandardMaterial roughness={1} />
-        </instancedMesh>
-      )}
-      <StreetFurniture layout={layout} />
+      <StreetParticles world={world} />
+      {SHAPES.map((s) => (
+        <FloatingSet key={s + ':' + world.seed} shape={s} pieces={pieces[s]} />
+      ))}
+      <Lamps layout={layout} />
       {world.landmarks.map((l) => (
         <LandmarkMesh key={l.id} lm={l} />
       ))}
@@ -148,49 +155,28 @@ export function WorldMesh({ world }: { world: World }) {
   );
 }
 
-function StreetFurniture({ layout }: { layout: ReturnType<typeof buildCityLayout> }) {
-  const posts = useRef<THREE.InstancedMesh>(null);
-  const heads = useRef<THREE.InstancedMesh>(null);
-  const bol = useRef<THREE.InstancedMesh>(null);
-  const ben = useRef<THREE.InstancedMesh>(null);
-  const headMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#d9d6cf', emissive: '#fff4dc', emissiveIntensity: 0.1 }), []);
-  const lampBoxes = useMemo<Box[]>(() => layout.lamps.map((l) => ({ x: l.x, z: l.z, y: 0, sx: 0.12, sy: 4.4, sz: 0.12, rot: l.rot, shade: 0 })), [layout]);
-  const headBoxes = useMemo<Box[]>(() => layout.lamps.map((l) => ({ x: l.x, z: l.z, y: 4.3, sx: 0.5, sy: 0.18, sz: 0.3, rot: l.rot, shade: 0 })), [layout]);
-  const bolBoxes = useMemo<Box[]>(() => layout.bollards.map((l) => ({ x: l.x, z: l.z, y: 0, sx: 0.22, sy: 0.85, sz: 0.22, rot: 0, shade: 0 })), [layout]);
-  const benBoxes = useMemo<Box[]>(() => layout.benches.map((l) => ({ x: l.x, z: l.z, y: 0.35, sx: 1.8, sy: 0.12, sz: 0.5, rot: l.rot + Math.PI / 2, shade: 0 })), [layout]);
-  useInstances(posts, lampBoxes);
-  useInstances(heads, headBoxes);
-  useInstances(bol, bolBoxes);
-  useInstances(ben, benBoxes);
-  // street lamps answer the HEARTBEAT sense with a faint pulse
-  useFrame(() => {
+/** street lamps without posts: small hovering lights that answer the HEARTBEAT sense */
+function Lamps({ layout }: { layout: CityLayout }) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#d9d6cf', emissive: '#fff4dc', emissiveIntensity: 0.1 }), []);
+  const lamps = useMemo(() => layout.lamps.map((l, i) => ({ ...l, y: 3.4 + ((i * 37) % 10) / 10, phase: i * 1.7 })), [layout]);
+  const tmp = useMemo(() => ({ m: new THREE.Matrix4(), q: new THREE.Quaternion(), p: new THREE.Vector3(), s: new THREE.Vector3(0.22, 0.22, 0.22), up: new THREE.Vector3(0, 1, 0) }), []);
+  useFrame((state) => {
+    const t = state.clock.elapsedTime;
     const hb = store.latest?.inner.heartbeat ?? 0;
-    const t = performance.now() / 1000;
     const beat = Math.pow(Math.max(0, Math.sin(t * Math.PI * 2 * 1.1)), 8);
-    headMat.emissiveIntensity = 0.08 + hb * (0.25 + beat * 0.6);
+    mat.emissiveIntensity = 0.08 + hb * (0.25 + beat * 0.6);
+    const m = ref.current;
+    if (!m) return;
+    lamps.forEach((l, i) => {
+      tmp.q.setFromAxisAngle(tmp.up, l.rot + t * 0.2 + l.phase);
+      tmp.p.set(l.x, l.y + Math.sin(t * 0.5 + l.phase) * 0.12, l.z);
+      m.setMatrixAt(i, tmp.m.compose(tmp.p, tmp.q, tmp.s));
+    });
+    m.instanceMatrix.needsUpdate = true;
   });
-  return (
-    <group>
-      {lampBoxes.length > 0 && (
-        <>
-          <instancedMesh ref={posts} args={[unitBox, undefined, lampBoxes.length]} castShadow>
-            <meshStandardMaterial color={PAL.charcoal} roughness={0.8} />
-          </instancedMesh>
-          <instancedMesh ref={heads} args={[unitBox, headMat, headBoxes.length]} castShadow />
-        </>
-      )}
-      {bolBoxes.length > 0 && (
-        <instancedMesh ref={bol} args={[unitBox, undefined, bolBoxes.length]} castShadow>
-          <meshStandardMaterial color={PAL.charcoal} roughness={0.8} />
-        </instancedMesh>
-      )}
-      {benBoxes.length > 0 && (
-        <instancedMesh ref={ben} args={[unitBox, undefined, benBoxes.length]} castShadow>
-          <meshStandardMaterial color={PAL.charcoal} roughness={0.9} />
-        </instancedMesh>
-      )}
-    </group>
-  );
+  if (!lamps.length) return null;
+  return <instancedMesh ref={ref} args={[unitGeo.box, mat, lamps.length]} frustumCulled={false} />;
 }
 
 const redMat = new THREE.MeshStandardMaterial({ color: PAL.red, roughness: 0.6 });

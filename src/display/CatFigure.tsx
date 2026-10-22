@@ -1,4 +1,6 @@
-// An abstract, geometric cat with procedural animation driven by a pose object.
+// Dargato as a loose constellation of triangles. An invisible skeleton is animated
+// procedurally from a pose object; each triangle follows its bone with its own lag and
+// drift, so the shards never touch but always move together.
 import { useFrame } from '@react-three/fiber';
 import { useMemo, useRef, type ReactElement } from 'react';
 import * as THREE from 'three';
@@ -24,6 +26,66 @@ export function newPose(): CatPose {
 
 const TAIL_SEGS = 7;
 
+type V3 = [number, number, number];
+type AnchorId = 'body' | 'head' | 'earL' | 'earR' | 'leg0' | 'leg1' | 'leg2' | 'leg3' | 'tail0' | 'tail2' | 'tail4';
+
+interface ShardDef {
+  anchor: AnchorId;
+  /** triangle corners in the anchor's local space */
+  pts: [V3, V3, V3];
+  /** how quickly the shard catches up with its bone */
+  lambda: number;
+  eye?: boolean;
+}
+
+const leg = (i: number): ShardDef => ({ anchor: `leg${i}` as AnchorId, pts: [[0.045, 0.02, 0], [-0.045, 0.02, 0], [0, -0.4, i < 2 ? 0.03 : -0.03]], lambda: 26 });
+const tailShard = (i: 0 | 2 | 4, w: number): ShardDef => ({ anchor: `tail${i}`, pts: [[w, w, 0], [-w, -w, 0], [0, 0, -0.26]], lambda: 9 - i });
+
+const SHARDS: ShardDef[] = [
+  // body: chest, spine, belly, haunch
+  { anchor: 'body', pts: [[0, 0.27, 0.4], [0.21, -0.1, 0.24], [-0.21, -0.1, 0.24]], lambda: 16 },
+  { anchor: 'body', pts: [[0, 0.21, 0.2], [0.17, 0.13, -0.32], [-0.17, 0.13, -0.32]], lambda: 13 },
+  { anchor: 'body', pts: [[0.13, -0.08, 0.12], [-0.13, -0.08, 0.12], [0, -0.17, -0.28]], lambda: 11 },
+  { anchor: 'body', pts: [[0, 0.2, -0.24], [0.23, -0.16, -0.42], [-0.23, -0.16, -0.42]], lambda: 10 },
+  // head: face, two eye slivers, two ears
+  { anchor: 'head', pts: [[0.19, 0.1, 0.02], [-0.19, 0.1, 0.02], [0, -0.17, 0.2]], lambda: 12 },
+  { anchor: 'head', pts: [[0.11, 0.06, 0.14], [0.05, 0.05, 0.15], [0.075, 0.015, 0.155]], lambda: 12, eye: true },
+  { anchor: 'head', pts: [[-0.11, 0.06, 0.14], [-0.05, 0.05, 0.15], [-0.075, 0.015, 0.155]], lambda: 12, eye: true },
+  { anchor: 'earL', pts: [[0.07, 0, 0], [-0.06, 0, 0.01], [0.01, 0.22, -0.03]], lambda: 18 },
+  { anchor: 'earR', pts: [[-0.07, 0, 0], [0.06, 0, 0.01], [-0.01, 0.22, -0.03]], lambda: 18 },
+  leg(0),
+  leg(1),
+  leg(2),
+  leg(3),
+  tailShard(0, 0.045),
+  tailShard(2, 0.035),
+  tailShard(4, 0.026),
+];
+
+/** a thin triangular plate (centred on its centroid), so it catches light and casts a shadow */
+function plateGeometry(pts: [V3, V3, V3]): { geo: THREE.BufferGeometry; centroid: THREE.Vector3 } {
+  const [a, b, c] = pts.map((p) => new THREE.Vector3(...p));
+  const centroid = a.clone().add(b).add(c).divideScalar(3);
+  const n = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a)).normalize().multiplyScalar(0.009);
+  const v = [a, b, c].map((p) => p.clone().sub(centroid));
+  const f = v.map((p) => p.clone().add(n));
+  const k = v.map((p) => p.clone().sub(n));
+  const tris: THREE.Vector3[][] = [
+    [f[0], f[1], f[2]],
+    [k[0], k[2], k[1]],
+  ];
+  for (let i = 0; i < 3; i++) {
+    const j = (i + 1) % 3;
+    tris.push([f[i], k[i], k[j]], [f[i], k[j], f[j]]);
+  }
+  const pos: number[] = [];
+  for (const t of tris) for (const p of t) pos.push(p.x, p.y, p.z);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.computeVertexNormals();
+  return { geo, centroid };
+}
+
 interface Props {
   pose: CatPose;
   color?: string;
@@ -35,29 +97,31 @@ interface Props {
 const damp = (cur: number, target: number, lambda: number, dt: number) => cur + (target - cur) * (1 - Math.exp(-lambda * dt));
 
 export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale = 1, castShadow = true }: Props) {
-  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color, roughness: 0.75, metalness: 0.05, flatShading: true }), [color]);
-  const eyeMat = useMemo(() => new THREE.MeshBasicMaterial({ color: eyeColor }), [eyeColor]);
-  const geo = useMemo(
-    () => ({
-      body: new THREE.CapsuleGeometry(0.24, 0.62, 3, 8),
-      chest: new THREE.IcosahedronGeometry(0.27, 0),
-      head: new THREE.IcosahedronGeometry(0.22, 1),
-      snout: new THREE.ConeGeometry(0.1, 0.16, 4),
-      ear: new THREE.ConeGeometry(0.075, 0.2, 3),
-      leg: new THREE.BoxGeometry(0.075, 0.36, 0.075),
-      tail: new THREE.CylinderGeometry(0.035, 0.045, 0.16, 5),
-      eye: new THREE.SphereGeometry(0.028, 6, 4),
-    }),
-    [],
-  );
+  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color, roughness: 0.8, metalness: 0.05, flatShading: true, side: THREE.DoubleSide }), [color]);
+  const eyeMat = useMemo(() => new THREE.MeshBasicMaterial({ color: eyeColor, side: THREE.DoubleSide }), [eyeColor]);
+  const plates = useMemo(() => SHARDS.map((d) => plateGeometry(d.pts)), []);
   const root = useRef<THREE.Group>(null!);
   const bodyG = useRef<THREE.Group>(null!);
   const headG = useRef<THREE.Group>(null!);
-  const earL = useRef<THREE.Mesh>(null!);
-  const earR = useRef<THREE.Mesh>(null!);
+  const earL = useRef<THREE.Group>(null!);
+  const earR = useRef<THREE.Group>(null!);
   const legs = useRef<THREE.Group[]>([]);
   const tail = useRef<THREE.Group[]>([]);
-  const st = useRef({ phase: 0, bodyY: 0.52, pitch: 0, roll: 0, headYaw: 0, headPitch: 0, earUp: 1, tailUp: 0.4, tailPuff: 1, legFold: 0, sit: 0, curl: 0, stretch: 0, t: 0 });
+  const shardMeshes = useRef<THREE.Mesh[]>([]);
+  const st = useRef({ phase: 0, bodyY: 0.52, pitch: 0, roll: 0, headYaw: 0, headPitch: 0, earUp: 1, tailUp: 0.4, tailPuff: 1, legFold: 0, sit: 0, curl: 0, stretch: 0, t: 0, spread: 0.18, init: false });
+  const tmp = useMemo(
+    () => ({
+      inv: new THREE.Matrix4(),
+      rel: new THREE.Matrix4(),
+      pos: new THREE.Vector3(),
+      quat: new THREE.Quaternion(),
+      scl: new THREE.Vector3(),
+      c: new THREE.Vector3(),
+      center: new THREE.Vector3(),
+      seeds: SHARDS.map((_, i) => ((i * 7919) % 101) / 101),
+    }),
+    [],
+  );
 
   useFrame((_, rawDt) => {
     const dt = Math.min(0.05, rawDt);
@@ -183,23 +247,69 @@ export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale
     });
 
     root.current.scale.setScalar(scale);
+
+    // shards: follow the skeleton, loosely.
+    // fear pulls the pieces together, calm and curiosity let them drift apart
+    let spread = 0.18 + p.curiosity * 0.12 + p.calm * 0.05 - p.caution * 0.08;
+    if (p.state === 'frightened') spread = 0.03;
+    if (p.state === 'sleeping' || p.state === 'resting') spread = 0.08;
+    if (p.state === 'alert') spread *= 0.5;
+    s.spread = damp(s.spread, Math.max(0.01, spread), 3, dt);
+    const drift = 0.012 + s.spread * 0.12;
+    const r = root.current;
+    r.updateMatrixWorld(true);
+    tmp.inv.copy(r.matrixWorld).invert();
+    tmp.center.set(0, s.bodyY, 0);
+    SHARDS.forEach((d, i) => {
+      const m = shardMeshes.current[i];
+      const a = anchorOf(d.anchor);
+      if (!m || !a) return;
+      tmp.rel.multiplyMatrices(tmp.inv, a.matrixWorld);
+      tmp.rel.decompose(tmp.pos, tmp.quat, tmp.scl);
+      // push each shard outward from the body's centre, plus its own slow drift
+      tmp.c.copy(plates[i].centroid).applyMatrix4(tmp.rel);
+      tmp.c.add(tmp.pos.copy(tmp.c).sub(tmp.center).multiplyScalar(s.spread));
+      const u = tmp.seeds[i] * 40;
+      tmp.c.x += Math.sin(s.t * 1.1 + u) * drift;
+      tmp.c.y += Math.sin(s.t * 1.7 + u * 1.3) * drift;
+      tmp.c.z += Math.sin(s.t * 0.9 + u * 0.7) * drift;
+      if (!s.init) {
+        m.position.copy(tmp.c);
+        m.quaternion.copy(tmp.quat);
+        m.scale.copy(tmp.scl);
+        return;
+      }
+      const k = 1 - Math.exp(-d.lambda * dt);
+      m.position.lerp(tmp.c, k);
+      m.quaternion.slerp(tmp.quat, k);
+      m.scale.lerp(tmp.scl, k);
+    });
+    s.init = true;
   });
 
+  const anchorOf = (id: AnchorId): THREE.Object3D | undefined => {
+    if (id === 'body') return bodyG.current;
+    if (id === 'head') return headG.current;
+    if (id === 'earL') return earL.current;
+    if (id === 'earR') return earR.current;
+    if (id.startsWith('leg')) return legs.current[+id.slice(3)];
+    return tail.current[+id.slice(4)];
+  };
+
   const tailChain = useMemo(() => {
-    // nested groups, each segment offset along its parent
+    // nested bones, each segment offset along its parent
     const build = (i: number): ReactElement | null => {
       if (i >= TAIL_SEGS) return null;
       return (
         <group key={i} position={[0, 0, i === 0 ? 0 : -0.15]} ref={(g) => { if (g) tail.current[i] = g; }}>
-          <mesh geometry={geo.tail} material={mat} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, -0.075]} castShadow={castShadow} scale={[1 - i * 0.08, 1, 1 - i * 0.08]} />
           {build(i + 1)}
         </group>
       );
     };
     return build(0);
-  }, [geo, mat, castShadow]);
+  }, []);
 
-  const legPos: [number, number, number][] = [
+  const legPos: V3[] = [
     [0.13, 0, 0.34],
     [-0.13, 0, 0.34],
     [0.13, 0, -0.34],
@@ -208,24 +318,27 @@ export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale
 
   return (
     <group ref={root}>
+      {/* invisible skeleton */}
       <group ref={bodyG} position={[0, 0.52, 0]}>
-        <mesh geometry={geo.body} material={mat} rotation={[Math.PI / 2, 0, 0]} castShadow={castShadow} />
-        <mesh geometry={geo.chest} material={mat} position={[0, 0.03, 0.3]} castShadow={castShadow} />
         {legPos.map((lp, i) => (
-          <group key={i} position={lp} ref={(g) => { if (g) legs.current[i] = g; }}>
-            <mesh geometry={geo.leg} material={mat} position={[0, -0.18, 0]} castShadow={castShadow} />
-          </group>
+          <group key={i} position={lp} ref={(g) => { if (g) legs.current[i] = g; }} />
         ))}
-        <group ref={headG} position={[0, 0.2, 0.52]}>
-          <mesh geometry={geo.head} material={mat} castShadow={castShadow} />
-          <mesh geometry={geo.snout} material={mat} rotation={[Math.PI / 2, 0, 0]} position={[0, -0.04, 0.2]} />
-          <mesh ref={earL} geometry={geo.ear} material={mat} position={[0.11, 0.2, -0.02]} rotation={[0, 0, -0.25]} castShadow={castShadow} />
-          <mesh ref={earR} geometry={geo.ear} material={mat} position={[-0.11, 0.2, -0.02]} rotation={[0, 0, 0.25]} castShadow={castShadow} />
-          <mesh geometry={geo.eye} material={eyeMat} position={[0.085, 0.04, 0.19]} />
-          <mesh geometry={geo.eye} material={eyeMat} position={[-0.085, 0.04, 0.19]} />
+        <group ref={headG} position={[0, 0.2, 0.55]}>
+          <group ref={earL} position={[0.12, 0.11, -0.02]} rotation={[0, 0, -0.3]} />
+          <group ref={earR} position={[-0.12, 0.11, -0.02]} rotation={[0, 0, 0.3]} />
         </group>
-        <group position={[0, 0.08, -0.52]}>{tailChain}</group>
+        <group position={[0, 0.1, -0.58]}>{tailChain}</group>
       </group>
+      {/* the visible, disconnected triangles */}
+      {SHARDS.map((d, i) => (
+        <mesh
+          key={i}
+          ref={(m) => { if (m) shardMeshes.current[i] = m; }}
+          geometry={plates[i].geo}
+          material={d.eye ? eyeMat : mat}
+          castShadow={castShadow && !d.eye}
+        />
+      ))}
     </group>
   );
 }

@@ -171,7 +171,7 @@ shared/   rng, types, protocol, roles + objectives, config, graph (A*, Dijkstra)
 server/   index (HTTP + Socket.IO), session (lifecycle, aggregation, director),
           players (input normalization, rate limits, simulated senses), cat (behaviour),
           routeChoice (junction scoring), hints, narrative (environmental events), objectives
-src/display  R3F scene: cityLayout (buildings around the graph), WorldMesh, CatFigure,
+src/display  R3F scene: cityLayout (building footprints around the graph), WorldMesh (floating solids), StreetParticles (streets as particle paths), CatFigure,
              Home, Signs (hints/events), Thoughts (sense particles), Scene (camera, fog, light, debug), audio (WebAudio)
 src/phone    PhoneApp, controls (one per sense), sensors (camera/mic/tilt, local only)
 src/director DirectorApp, MapView

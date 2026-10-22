@@ -2,7 +2,7 @@ export const PAL = {
   fog: '#e7e5e0',
   fogArrival: '#e9e1de',
   fogSleep: '#b9b6b1',
-  ground: '#9c9a95',
+  ground: '#d4d2cc',
   sidewalk: '#c9c7c1',
   main: '#e6e4de',
   street: '#e0ded8',
