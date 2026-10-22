@@ -102,7 +102,7 @@ eduroam or venue Wi-Fi with client isolation is fine.
 | sense | phone | fallback | effect on Dargato |
 | ----- | ----- | -------- | ----------------- |
 | SIGHT | camera brightness | swipe up to keep an eye from closing | too dark: the night closes in; too bright: glaring fog; in between he sees clearly |
-| SPEED | scratching the screen top to bottom | – | moves his paws; more scratching, faster paws; no scratching, no walking. He only gets anywhere if there is a path |
+| SPEED | scratching the screen top to bottom | – | moves his paws; more scratching, faster paws, from a walk up to a gallop; no scratching, no walking. He only gets anywhere if there is a path |
 | DIRECTION | tilt left/right | touch joystick | turns him left or right in real time, also while standing |
 | MEMORY | loudness (blow or whisper into the mic) | tapping, faster = louder | sound pulls the particles into paths and the buildings down to the ground; silence scatters the paths, lifts the buildings and he cannot walk |
 | INSTINCT | shaking the phone | scratching side to side | the particles of the shortest way home (from where he stands) turn red and flow homeward |

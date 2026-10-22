@@ -1,9 +1,11 @@
 // Dargato as a loose constellation of triangles. An invisible skeleton is animated
 // procedurally from a pose object; each triangle follows its bone with its own lag and
-// drift, so the shards never touch but always move together.
+// drift, so the shards never touch but always move together. Slow, he walks with a
+// diagonal gait; fast, he gallops: legs in pairs, the spine stretching and gathering.
 import { useFrame } from '@react-three/fiber';
 import { useMemo, useRef, type ReactElement } from 'react';
 import * as THREE from 'three';
+import { wrapAngle } from '../../shared/graph';
 import type { CatState } from '../../shared/types';
 
 export interface CatPose {
@@ -27,7 +29,7 @@ export function newPose(): CatPose {
 const TAIL_SEGS = 7;
 
 type V3 = [number, number, number];
-type AnchorId = 'body' | 'head' | 'earL' | 'earR' | 'leg0' | 'leg1' | 'leg2' | 'leg3' | 'tail0' | 'tail2' | 'tail4';
+type AnchorId = 'body' | 'chest' | 'haunch' | 'head' | 'earL' | 'earR' | 'leg0' | 'leg1' | 'leg2' | 'leg3' | 'tail0' | 'tail2' | 'tail4';
 
 interface ShardDef {
   anchor: AnchorId;
@@ -43,10 +45,10 @@ const tailShard = (i: 0 | 2 | 4, w: number): ShardDef => ({ anchor: `tail${i}`, 
 
 const SHARDS: ShardDef[] = [
   // body: chest, spine, belly, haunch
-  { anchor: 'body', pts: [[0, 0.27, 0.4], [0.21, -0.1, 0.24], [-0.21, -0.1, 0.24]], lambda: 16 },
+  { anchor: 'chest', pts: [[0, 0.27, 0.4], [0.21, -0.1, 0.24], [-0.21, -0.1, 0.24]], lambda: 16 },
   { anchor: 'body', pts: [[0, 0.21, 0.2], [0.17, 0.13, -0.32], [-0.17, 0.13, -0.32]], lambda: 13 },
   { anchor: 'body', pts: [[0.13, -0.08, 0.12], [-0.13, -0.08, 0.12], [0, -0.17, -0.28]], lambda: 11 },
-  { anchor: 'body', pts: [[0, 0.2, -0.24], [0.23, -0.16, -0.42], [-0.23, -0.16, -0.42]], lambda: 10 },
+  { anchor: 'haunch', pts: [[0, 0.2, -0.24], [0.23, -0.16, -0.42], [-0.23, -0.16, -0.42]], lambda: 14 },
   // head: face, two eye slivers, two ears
   { anchor: 'head', pts: [[0.19, 0.1, 0.02], [-0.19, 0.1, 0.02], [0, -0.17, 0.2]], lambda: 12 },
   { anchor: 'head', pts: [[0.11, 0.06, 0.14], [0.05, 0.05, 0.15], [0.075, 0.015, 0.155]], lambda: 12, eye: true },
@@ -95,6 +97,15 @@ interface Props {
 }
 
 const damp = (cur: number, target: number, lambda: number, dt: number) => cur + (target - cur) * (1 - Math.exp(-lambda * dt));
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+const ss = (a: number, b: number, x: number) => {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+/** leg phase offsets: walking in diagonal pairs, galloping front pair against hind pair (slightly staggered) */
+const WALK_OFFS = [0, Math.PI, Math.PI, 0];
+const RUN_OFFS = [Math.PI * 0.95, Math.PI * 0.95 + 0.4, 0, 0.4];
 
 export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale = 1, castShadow = true }: Props) {
   const mat = useMemo(() => new THREE.MeshStandardMaterial({ color, roughness: 0.8, metalness: 0.05, flatShading: true, side: THREE.DoubleSide }), [color]);
@@ -102,13 +113,15 @@ export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale
   const plates = useMemo(() => SHARDS.map((d) => plateGeometry(d.pts)), []);
   const root = useRef<THREE.Group>(null!);
   const bodyG = useRef<THREE.Group>(null!);
+  const chestG = useRef<THREE.Group>(null!);
+  const haunchG = useRef<THREE.Group>(null!);
   const headG = useRef<THREE.Group>(null!);
   const earL = useRef<THREE.Group>(null!);
   const earR = useRef<THREE.Group>(null!);
   const legs = useRef<THREE.Group[]>([]);
   const tail = useRef<THREE.Group[]>([]);
   const shardMeshes = useRef<THREE.Mesh[]>([]);
-  const st = useRef({ phase: 0, bodyY: 0.52, pitch: 0, roll: 0, headYaw: 0, headPitch: 0, earUp: 1, tailUp: 0.4, tailPuff: 1, legFold: 0, sit: 0, curl: 0, stretch: 0, t: 0, spread: 0.18, init: false });
+  const st = useRef({ phase: 0, bodyY: 0.52, pitch: 0, roll: 0, headYaw: 0, headPitch: 0, earUp: 1, tailUp: 0.4, tailPuff: 1, legFold: 0, sit: 0, curl: 0, stretch: 0, t: 0, spread: 0.18, run: 0, yaw: 0, lean: 0, init: false });
   const tmp = useMemo(
     () => ({
       inv: new THREE.Matrix4(),
@@ -128,9 +141,14 @@ export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale
     const s = st.current;
     const p = pose;
     s.t += dt;
-    const moving = p.speed > 0.15;
-    const trot = p.state === 'trotting';
-    s.phase += dt * p.speed * (trot ? 5.2 : 4.4);
+    const sp = p.speed;
+    const moving = sp > 0.15;
+    // gait: 0 walking .. 1 galloping
+    s.run = damp(s.run, moving ? ss(2.0, 3.4, sp) : 0, 4, dt);
+    const R = s.run;
+    // strides per second: the walk quickens with speed, the gallop keeps a steadier beat with longer strides
+    if (moving) s.phase += dt * Math.PI * 2 * lerp(0.35 + sp * 0.55, 2.3 + sp * 0.12, R);
+    const ph = s.phase;
 
     // targets per state
     let bodyY = 0.52;
@@ -197,6 +215,10 @@ export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale
       headPitch += 0.2;
       tailUp -= 0.3;
     }
+    // galloping: low and long, ears back, the tail streaming behind
+    bodyY -= 0.05 * R;
+    earUp *= 1 - 0.3 * R;
+    tailUp = lerp(tailUp, 0.05, R * 0.8);
 
     const L = 7;
     s.bodyY = damp(s.bodyY, bodyY, L, dt);
@@ -212,36 +234,58 @@ export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale
     s.stretch = damp(s.stretch, stretch, 6, dt);
     s.roll = damp(s.roll, roll, 20, dt);
 
-    const bob = moving ? Math.abs(Math.sin(s.phase)) * (trot ? 0.06 : 0.03) : Math.sin(s.t * 2) * 0.008;
+    // leaning into turns: how fast his heading changes (turning right = heading decreasing)
+    const r = root.current;
+    const yaw = Math.atan2(r.matrixWorld.elements[8], r.matrixWorld.elements[10]);
+    const yawRate = s.init ? wrapAngle(yaw - s.yaw) / Math.max(dt, 1e-3) : 0;
+    s.yaw = yaw;
+    s.lean = damp(s.lean, Math.max(-0.3, Math.min(0.3, -yawRate * 0.09 * ss(0.5, 3, sp))), 6, dt);
+
+    // body: walking sways a little; galloping bounds, rocks nose-up / nose-down and
+    // stretches (legs reaching apart) and gathers (legs under him) with every stride
+    const walkK = moving ? 1 - R : 0;
+    const ext = Math.sin(ph) * R;
+    const bob = moving ? lerp(Math.abs(Math.sin(ph)) * (0.025 + 0.012 * sp), (0.5 - 0.5 * Math.cos(ph)) * 0.15, R) : Math.sin(s.t * 2) * 0.008;
+    const rock = Math.cos(ph) * 0.11 * R + Math.sin(ph * 2) * 0.015 * walkK;
     const b = bodyG.current;
     b.position.y = s.bodyY + bob - s.sit * 0.08;
-    b.rotation.x = s.pitch - s.sit * 0.55 + s.stretch * 0.25;
-    b.rotation.z = s.roll;
-    b.rotation.y = s.curl * 0.9;
+    b.rotation.x = s.pitch - s.sit * 0.55 + s.stretch * 0.25 + rock;
+    b.rotation.z = s.roll + s.lean + Math.sin(ph) * 0.04 * walkK;
+    b.rotation.y = s.curl * 0.9 + Math.sin(ph) * 0.05 * walkK;
     b.scale.set(1, 1, 1 + s.stretch * 0.12);
+    // the spine arches when gathered (both ends dip) and flattens out when stretched
+    chestG.current.position.z = ext * 0.09;
+    chestG.current.rotation.x = -ext * 0.2;
+    haunchG.current.position.z = -ext * 0.09;
+    haunchG.current.rotation.x = ext * 0.2;
 
+    // the head stays steady while the body rocks under it, reaching forward at a run
     const h = headG.current;
-    h.rotation.set(s.headPitch + s.sit * 0.5 - s.stretch * 0.3, s.headYaw, 0, 'YXZ');
+    h.position.z = 0.55 + 0.06 * R;
+    h.rotation.set(s.headPitch + s.sit * 0.5 - s.stretch * 0.3 - rock * 0.8, s.headYaw, 0, 'YXZ');
     earL.current.scale.y = s.earUp;
     earR.current.scale.y = s.earUp;
+    earL.current.rotation.x = earR.current.rotation.x = -0.5 * R;
 
-    // legs: diagonal gait
-    const amp = moving ? (trot ? 0.75 : 0.5) : 0;
-    const offs = [0, Math.PI, Math.PI, 0];
+    // legs: diagonal walk blending into a gallop; each leg folds up as it swings forward
+    const ampW = moving ? 0.32 + 0.08 * sp : 0;
+    const ampR = moving ? 0.95 : 0;
     legs.current.forEach((g, i) => {
       if (!g) return;
       const front = i < 2;
-      const swing = Math.sin(s.phase + offs[i]) * amp;
+      const swing = lerp(Math.sin(ph + WALK_OFFS[i]) * ampW, Math.sin(ph + RUN_OFFS[i]) * ampR, R);
+      const lift = moving ? lerp(Math.max(0, -Math.cos(ph + WALK_OFFS[i])) * 0.18, Math.max(0, -Math.cos(ph + RUN_OFFS[i])) * 0.45, R) : 0;
       g.rotation.x = swing * (1 - s.legFold) + (front ? -1.4 : 1.4) * s.legFold * 0.9 + (front ? s.sit * 0.5 : -s.sit * 1.2);
       g.position.y = -0.08 - s.legFold * 0.05;
+      g.scale.y = 1 - lift * (1 - s.legFold);
     });
 
-    // tail: a chain bending upward, with a curious hook at the tip
+    // tail: a chain bending upward, with a curious hook at the tip; at a run it ripples with the stride
     tail.current.forEach((g, i) => {
       if (!g) return;
       const k = i / (TAIL_SEGS - 1);
-      const sway = Math.sin(s.t * (moving ? 3 : 1.4) + i * 0.6) * (0.12 + 0.1 * k);
-      g.rotation.x = s.tailUp * 0.42 + (i === TAIL_SEGS - 1 ? p.curiosity * 0.6 : 0) - s.curl * 0.2;
+      const sway = Math.sin(s.t * (moving ? 3 : 1.4) + i * 0.6) * (0.12 + 0.1 * k) * (1 - 0.6 * R);
+      g.rotation.x = s.tailUp * 0.42 + (i === TAIL_SEGS - 1 ? p.curiosity * 0.6 : 0) - s.curl * 0.2 + Math.sin(ph - i * 0.8) * 0.1 * R;
       g.rotation.z = sway + s.curl * 0.45;
       g.scale.set(s.tailPuff, 1, s.tailPuff);
     });
@@ -256,7 +300,6 @@ export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale
     if (p.state === 'alert') spread *= 0.5;
     s.spread = damp(s.spread, Math.max(0.01, spread), 3, dt);
     const drift = 0.012 + s.spread * 0.12;
-    const r = root.current;
     r.updateMatrixWorld(true);
     tmp.inv.copy(r.matrixWorld).invert();
     tmp.center.set(0, s.bodyY, 0);
@@ -279,7 +322,8 @@ export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale
         m.scale.copy(tmp.scl);
         return;
       }
-      const k = 1 - Math.exp(-d.lambda * dt);
+      // at a run the shards keep up with the faster stride
+      const k = 1 - Math.exp(-d.lambda * (1 + 1.5 * R) * dt);
       m.position.lerp(tmp.c, k);
       m.quaternion.slerp(tmp.quat, k);
       m.scale.lerp(tmp.scl, k);
@@ -289,6 +333,8 @@ export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale
 
   const anchorOf = (id: AnchorId): THREE.Object3D | undefined => {
     if (id === 'body') return bodyG.current;
+    if (id === 'chest') return chestG.current;
+    if (id === 'haunch') return haunchG.current;
     if (id === 'head') return headG.current;
     if (id === 'earL') return earL.current;
     if (id === 'earR') return earR.current;
@@ -320,14 +366,22 @@ export function CatFigure({ pose, color = '#121212', eyeColor = '#e9e6dc', scale
     <group ref={root}>
       {/* invisible skeleton */}
       <group ref={bodyG} position={[0, 0.52, 0]}>
-        {legPos.map((lp, i) => (
-          <group key={i} position={lp} ref={(g) => { if (g) legs.current[i] = g; }} />
-        ))}
-        <group ref={headG} position={[0, 0.2, 0.55]}>
-          <group ref={earL} position={[0.12, 0.11, -0.02]} rotation={[0, 0, -0.3]} />
-          <group ref={earR} position={[-0.12, 0.11, -0.02]} rotation={[0, 0, 0.3]} />
+        {/* front half: head and forelegs; back half: hind legs and tail */}
+        <group ref={chestG}>
+          {legPos.slice(0, 2).map((lp, i) => (
+            <group key={i} position={lp} ref={(g) => { if (g) legs.current[i] = g; }} />
+          ))}
+          <group ref={headG} position={[0, 0.2, 0.55]}>
+            <group ref={earL} position={[0.12, 0.11, -0.02]} rotation={[0, 0, -0.3]} />
+            <group ref={earR} position={[-0.12, 0.11, -0.02]} rotation={[0, 0, 0.3]} />
+          </group>
         </group>
-        <group position={[0, 0.1, -0.58]}>{tailChain}</group>
+        <group ref={haunchG}>
+          {legPos.slice(2).map((lp, i) => (
+            <group key={i} position={lp} ref={(g) => { if (g) legs.current[i + 2] = g; }} />
+          ))}
+          <group position={[0, 0.1, -0.58]}>{tailChain}</group>
+        </group>
       </group>
       {/* the visible, disconnected triangles */}
       {SHARDS.map((d, i) => (

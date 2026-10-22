@@ -160,7 +160,7 @@ export class CatSim {
   distance = 0;
   seenLandmarks = new Set<number>();
   discovered = new Set<number>();
-  cfgSpeed = 3.2;
+  cfgSpeed = 4.5;
   readonly walk: Walkable;
   private street = -1;
   private lookT = 0;
@@ -242,7 +242,7 @@ export class CatSim {
     // SPEED moves the paws; MEMORY decides whether there is a path under them
     const path = smooth(0.2, 0.55, d.cohesion);
     const target = this.cfgSpeed * d.paws * path * (this.lookT > 0 ? 0.6 : 1);
-    this.speed += clamp(target - this.speed, -dt * 6, dt * 3.5);
+    this.speed += clamp(target - this.speed, -dt * 7, dt * 4.5);
 
     // with no hand on the direction he follows the street he is in
     const inDisc = this.walk.disc(this.x, this.z);

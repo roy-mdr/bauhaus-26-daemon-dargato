@@ -40,7 +40,7 @@ export const DEFAULT_CONFIG: SessionConfig = {
   lockSeed: false,
   maxDurationSec: 480,
   finalGraceSec: 90,
-  catSpeed: 3.2,
+  catSpeed: 4.5,
   fogDensity: 0.022,
   lightIntensity: 1,
   heartBpm: 72,

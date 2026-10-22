@@ -36,8 +36,8 @@ export function Dargato() {
     }
     pose.state = c.state;
     pose.stateTime = t - v.stateSince;
-    // paws keep moving even when there is no path to walk on
-    pose.speed = Math.max(c.speed, c.paws);
+    // paws keep moving even when there is no path to walk on (treading, never galloping on the spot)
+    pose.speed = c.state === 'hesitating' ? Math.min(c.paws, 1.6) : Math.max(c.speed, c.paws);
     if (c.look) {
       const rel = wrapAngle(Math.atan2(c.look[0] - c.x, c.look[1] - c.z) - v.heading);
       pose.lookYaw = rel;
