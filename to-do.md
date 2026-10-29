@@ -3,5 +3,5 @@
 - [x] Move the target for light and sound from dargato far from home to dargato close to home
 - [x] Tutorial page: Controls and how home looks
 - [ ] History of Dargato and texts
-- [ ] Display names instead of dots?
+- [x] Display names instead of dots?
 - [ ] Path only grounded in a radius near dargato

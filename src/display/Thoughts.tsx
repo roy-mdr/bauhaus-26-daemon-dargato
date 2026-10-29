@@ -1,6 +1,7 @@
 // Dargato's intrusive thoughts: one small swarm of particles per sense around the cat.
 // Each swarm moves according to its player's live channels (simulated senses included),
 // and discrete gestures (scratches, shakes, heartbeat taps) make it flare.
+// The first player of each sense to fulfil their wish gets their name there instead of dots.
 import { useFrame, useThree } from '@react-three/fiber';
 import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
@@ -46,6 +47,49 @@ interface Swarm {
   seed: Float32Array;
   prevF: Float32Array;
   init: boolean;
+  /** this player's name replaces the dots */
+  named: boolean;
+  /** 0 dots .. 1 name */
+  nameEnv: number;
+  label?: THREE.Sprite;
+}
+
+/** the player's name as a flat label floating by Dargato: a red square, then the name in capitals */
+function makeLabel(name: string): THREE.Sprite {
+  const text = name.toUpperCase().slice(0, 18);
+  const cv = document.createElement('canvas');
+  const ctx = cv.getContext('2d')!;
+  const font = '500 56px "Helvetica Neue", Helvetica, Arial, sans-serif';
+  ctx.font = font;
+  const spacing = 10;
+  const w = Math.ceil(ctx.measureText(text).width + spacing * text.length + 70);
+  cv.width = w;
+  cv.height = 80;
+  ctx.font = font;
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = PAL.red;
+  ctx.fillRect(4, 26, 28, 28);
+  ctx.fillStyle = PAL.black;
+  let x = 50;
+  for (const ch of text) {
+    ctx.fillText(ch, x, 42);
+    x += ctx.measureText(ch).width + spacing;
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0 });
+  const sprite = new THREE.Sprite(mat);
+  const h = 0.3;
+  sprite.scale.set((h * w) / cv.height, h, 1);
+  sprite.renderOrder = 3;
+  return sprite;
+}
+
+function disposeLabel(s: THREE.Sprite) {
+  s.removeFromParent();
+  s.material.map?.dispose();
+  s.material.dispose();
 }
 
 function newSwarm(p: PlayerPublic): Swarm {
@@ -72,6 +116,8 @@ function newSwarm(p: PlayerPublic): Swarm {
     seed,
     prevF: new Float32Array(PER),
     init: false,
+    named: false,
+    nameEnv: 0,
   };
 }
 
@@ -252,6 +298,7 @@ export function Thoughts() {
   const gl = useThree((s) => s.gl);
   const scene = useThree((s) => s.scene);
   const swarms = useRef(new Map<string, Swarm>());
+  const labels = useRef<THREE.Group>(null!);
   const phaseEnv = useRef(0);
   const lastCat = useRef({ x: 0, z: 0, init: false });
 
@@ -306,6 +353,7 @@ export function Thoughts() {
     for (const p of snap?.players ?? []) {
       let sw = map.get(p.id);
       if (sw && p.role.sense !== sw.sense) {
+        if (sw.label) disposeLabel(sw.label);
         map.delete(p.id);
         sw = undefined;
       }
@@ -318,6 +366,11 @@ export function Thoughts() {
       sw.influence = p.connected ? Math.min(1, p.influence) : Math.min(0.5, p.influence);
       if (p.pulses > sw.pulses) sw.imp = 1;
       sw.pulses = p.pulses;
+      const named = !!p.named;
+      // the wish is fulfilled: the dots burst once as they give way to the name
+      if (named && !sw.named) sw.imp = 1;
+      sw.named = named;
+      if (named && !sw.label) labels.current.add((sw.label = makeLabel(p.nickname)));
     }
 
     const mdx = lastCat.current.init ? cat.x - lastCat.current.x : 0;
@@ -335,8 +388,24 @@ export function Thoughts() {
     for (const [id, sw] of map) {
       sw.env += ((sw.alive ? sw.influence : 0) - sw.env) * (1 - Math.exp(-dt * 1.2));
       if (!sw.alive && sw.env < 0.01) {
+        if (sw.label) disposeLabel(sw.label);
         map.delete(id);
         continue;
+      }
+      sw.nameEnv += ((sw.named ? 1 : 0) - sw.nameEnv) * (1 - Math.exp(-dt * 1.5));
+      if (sw.label) {
+        // the name floats where the dots were, at the swarm's place around him
+        const a = sw.slot + 0.15 * Math.sin(t * 0.3 + sw.seed[0] * 10);
+        const r = 1.5;
+        const lx = Math.sin(a) * r;
+        const lz = Math.cos(a) * r;
+        sw.label.position.set(cat.x + lx * cosH + lz * sinH, 1.25 + 0.08 * Math.sin(t * 0.8 + sw.seed[1] * 10), cat.z + lz * cosH - lx * sinH);
+        sw.label.material.opacity = sw.nameEnv * sw.env * phaseEnv.current;
+        sw.label.visible = sw.label.material.opacity > 0.01;
+        if (!sw.named && sw.nameEnv < 0.01) {
+          disposeLabel(sw.label);
+          sw.label = undefined;
+        }
       }
       for (const k in sw.target) {
         const cur = sw.ch[k] ?? sw.target[k];
@@ -394,7 +463,7 @@ export function Thoughts() {
         attr.col.array[o + 1] = out.color.g;
         attr.col.array[o + 2] = out.color.b;
         attr.sz.array[n] = out.size * 1.3 * (1 + sw.imp * 0.6);
-        attr.al.array[n] = Math.min(0.9, Math.max(0, out.alpha) * (1 + sw.imp * 0.8)) * sw.env * phaseEnv.current;
+        attr.al.array[n] = Math.min(0.9, Math.max(0, out.alpha) * (1 + sw.imp * 0.8)) * sw.env * phaseEnv.current * (1 - sw.nameEnv);
         attr.sh.array[n] = out.shape;
         n++;
       }
@@ -404,5 +473,10 @@ export function Thoughts() {
     for (const a of Object.values(attr)) a.needsUpdate = true;
   });
 
-  return <points geometry={geo} material={mat} frustumCulled={false} renderOrder={2} />;
+  return (
+    <>
+      <points geometry={geo} material={mat} frustumCulled={false} renderOrder={2} />
+      <group ref={labels} />
+    </>
+  );
 }

@@ -40,7 +40,10 @@ export class Objectives {
       if (p.kind === 'sim' || p.objective.id !== id || p.objective.done) continue;
       if (!isActive(p, now, windowMs)) continue;
       p.objective.progress = Math.min(OBJECTIVES[id].target, p.objective.progress + amount);
-      if (p.objective.progress >= OBJECTIVES[id].target) p.objective.done = true;
+      if (p.objective.progress >= OBJECTIVES[id].target) {
+        p.objective.done = true;
+        p.objective.doneAt = now;
+      }
     }
   }
 

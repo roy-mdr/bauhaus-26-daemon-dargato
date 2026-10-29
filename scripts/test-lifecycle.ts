@@ -159,4 +159,15 @@ turners.forEach((p) => (p.sense.valueAt = avg.now + 1e6));
 avg.step();
 assert.ok(Math.abs(avg.senses.turn - 0.4) < 0.01, `turn ${avg.senses.turn}`);
 
+// only the first of a sense to fulfil their wish is named on the main display
+const named = () => new Map(avg.publicPlayers().map((p) => [p.id, !!p.named]));
+assert.ok(![...named().values()].some(Boolean), 'nobody named before a wish is fulfilled');
+turners[1].objective = { ...turners[1].objective, done: true, doneAt: 500 };
+turners[0].objective = { ...turners[0].objective, done: true, doneAt: 900 };
+assert.equal(named().get(turners[1].id), true);
+assert.equal(named().get(turners[0].id), false);
+const other = [...avg.players.values()].find((p) => p.role.sense === 'speed')!;
+other.objective = { ...other.objective, done: true, doneAt: 1200 };
+assert.equal(named().get(other.id), true, 'each sense has its own first');
+
 console.log('lifecycle OK');

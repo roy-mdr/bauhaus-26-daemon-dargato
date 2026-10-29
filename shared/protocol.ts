@@ -37,6 +37,8 @@ export interface PlayerPublic {
   ch: Record<string, number>;
   /** running count of discrete gestures (taps, scratches, shakes) */
   pulses: number;
+  /** first of their sense to fulfil their wish: their name replaces their dots around Dargato */
+  named?: boolean;
 }
 
 export interface CatSnapshot {

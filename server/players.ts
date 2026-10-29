@@ -33,7 +33,8 @@ export interface Player {
   influence: number;
   sensor?: SensorStatus;
   sense: SenseState;
-  objective: { id: ObjectiveId; progress: number; done: boolean; failed: boolean };
+  /** doneAt: session clock (ms) when the wish was fulfilled */
+  objective: { id: ObjectiveId; progress: number; done: boolean; failed: boolean; doneAt?: number };
   stats: { inputs: number; pulses: number };
   joinOrder: number;
 }

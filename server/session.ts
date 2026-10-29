@@ -558,6 +558,14 @@ export class Session {
 
   publicPlayers(): PlayerPublic[] {
     const list: PlayerPublic[] = [];
+    // per sense, only the first player to fulfil their wish is named
+    const first = new Map<SenseId, Player>();
+    for (const p of this.players.values()) {
+      const at = p.objective.done ? p.objective.doneAt : undefined;
+      if (at === undefined) continue;
+      const cur = first.get(p.role.sense);
+      if (!cur || at < cur.objective.doneAt!) first.set(p.role.sense, p);
+    }
     for (const p of this.players.values()) {
       list.push({
         id: p.id,
@@ -574,6 +582,7 @@ export class Session {
         influence: p.influence,
         ch: roundChannels(p),
         pulses: p.stats.pulses,
+        named: first.get(p.role.sense) === p,
       });
     }
     for (const [sense, sim] of this.sims) {
