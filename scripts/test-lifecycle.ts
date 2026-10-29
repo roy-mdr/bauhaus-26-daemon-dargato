@@ -1,6 +1,7 @@
 // Session lifecycle: night-ending fallbacks, the heartbeat, the senses' effects, director commands, role assignment.
 import assert from 'node:assert/strict';
 import { Session, TICK_HZ, type Outbox } from '../server/session';
+import { clearBand, senseCurves } from '../shared/config';
 import type { SenseId } from '../shared/types';
 
 const out: Outbox = { displays() {}, directors() {}, phone() {}, counts: () => ({ displays: 0, phones: 0, directors: 0, debug: 0 }) };
@@ -89,8 +90,14 @@ run(m, 3, undefined, () => m.devInput({ sense: 'sight', hold: 0 }));
 assert.ok(m.cat.I.light < 0.2);
 run(m, 3, undefined, () => m.devInput({ sense: 'sight', hold: 1 }));
 assert.ok(m.cat.I.glare > 0.8);
-run(m, 3, undefined, () => m.devInput({ sense: 'sight', hold: 0.5 }));
+const [lo, hi] = clearBand(m.near);
+run(m, 3, undefined, () => m.devInput({ sense: 'sight', hold: (lo + hi) / 2 }));
 assert.ok(m.cat.I.light > 0.9 && m.cat.I.glare < 0.05);
+// far from home a little light already blinds him and a whisper holds the paths; at home he needs more of both
+const far = senseCurves(0);
+const home = senseCurves(1);
+assert.ok(clearBand(0)[1] < clearBand(1)[0], 'the clear band climbs toward home');
+assert.ok(far.sound[1] < home.sound[0] + 0.1 && far.sound[1] < home.sound[1], 'more sound is needed near home');
 run(m, 2, undefined, () => m.devInput({ sense: 'instinct', hold: 1 }));
 assert.ok(m.cat.I.instinct > 0.8);
 assert.ok(m.snapshot().planned.length > 0);

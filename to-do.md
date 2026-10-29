@@ -1,0 +1,7 @@
+- [ ] Do some animation when he x.x can't reach home
+- [ ] Make more explicit when a daemon wins the task, if it has the same task than other daemon (the other one can loose the controll?)
+- [x] Move the target for light and sound from dargato far from home to dargato close to home
+- [ ] Tutorial page: Controls and how home looks
+- [ ] History of Dargato and texts
+- [ ] Display names instead of dots?
+- [ ] Path only grounded in a radius near dargato

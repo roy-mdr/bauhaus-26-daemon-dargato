@@ -72,6 +72,12 @@ export interface Snapshot {
   /** the shortest way home from where he stands (edge ids, current street first) */
   planned: number[];
   homeReveal: number;
+  /** how close he is to home, 0 at the start .. 1 at home; SIGHT and MEMORY ask for more as it rises (see senseCurves) */
+  near: number;
+  /** MEMORY: the averaged loudness 0..1 (inner.cohesion is what it does to the paths) */
+  loudness: number;
+  /** where each sense should be right now: the SIGHT clear band, the MEMORY ramp, the HEARTBEAT half-width */
+  targets: { sight: [number, number]; sound: [number, number]; heart: number };
   /** the pulse HEARTBEAT players tap along with */
   heartBpm: number;
   players: PlayerPublic[];
@@ -126,6 +132,10 @@ export interface PhoneState {
     level: number;
     /** the pulse on the big screen (bpm) */
     tempo: number;
+    /** SIGHT: the light range in which he sees clearly; it climbs as he nears home */
+    band: [number, number];
+    /** HEARTBEAT: |slider| below this is on the beat */
+    heartZone: number;
   };
   feedback: string;
   sensitivity: number;

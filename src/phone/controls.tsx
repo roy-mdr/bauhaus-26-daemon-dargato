@@ -117,9 +117,6 @@ function Instruction({ state, fallback }: { state: PhoneState; fallback: boolean
   return <p className="note">{fallback ? info.fallback : info.instruction}</p>;
 }
 
-// the light band (camera value) in which he sees clearly, matching the server's curves
-const CLEAR_BAND: [number, number] = [0.3, 0.7];
-
 // ---------------- SIGHT ----------------
 
 export function SightControl({ state, sendValue, setSensor }: ControlProps) {
@@ -147,7 +144,9 @@ export function SightControl({ state, sendValue, setSensor }: ControlProps) {
     setV(eye.current);
     sendValue(eye.current);
   }, s.fallback);
-  const open = clamp(v / 0.5);
+  // the light band in which he sees clearly; it climbs as he nears home
+  const band = state.cue.band;
+  const open = clamp(v / ((band[0] + band[1]) / 2));
   return (
     <div className="control">
       <div
@@ -165,9 +164,9 @@ export function SightControl({ state, sendValue, setSensor }: ControlProps) {
         onPointerUp={() => (swipe.current.on = false)}
         style={{ touchAction: 'none' }}
       >
-        <div className={'eye' + (v > CLEAR_BAND[1] ? ' glare' : '')} style={{ transform: `scaleY(${0.06 + open * 0.94})`, opacity: 0.35 + Math.min(1, v * 1.5) * 0.65 }} />
+        <div className={'eye' + (v > band[1] ? ' glare' : '')} style={{ transform: `scaleY(${0.06 + open * 0.94})`, opacity: 0.35 + Math.min(1, v * 1.5) * 0.65 }} />
       </div>
-      <Meter value={v} label="dark · clear · blinding" band={CLEAR_BAND} red />
+      <Meter value={v} label="dark · clear · blinding" band={band} red />
       <Instruction state={state} fallback={s.fallback} />
       {s.fallback ? (
         <p className="note">swipe up on the eye</p>
@@ -484,7 +483,7 @@ export function HeartbeatControl({ state, send, setSensor }: ControlProps) {
         <span className="pulse-dot" style={{ opacity: 0.25 + beat * 0.75, transform: `scale(${1 + beat * 0.4})` }} />
         <span className="note">the pulse · {state.cue.tempo} bpm</span>
       </div>
-      <Meter value={h} min={-1} max={1} label="too slow · on the beat · too fast" band={[-0.3, 0.3]} red />
+      <Meter value={h} min={-1} max={1} label="too slow · on the beat · too fast" band={[-state.cue.heartZone, state.cue.heartZone]} red />
       <Instruction state={state} fallback={false} />
     </div>
   );

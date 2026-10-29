@@ -205,6 +205,10 @@ export interface SimContext {
   steer: number;
   /** the pulse on the main display */
   heartBpm: number;
+  /** SIGHT values in which he sees clearly right now */
+  clear: [number, number];
+  /** MEMORY: the loudness edge over which the paths hold together right now */
+  sound: [number, number];
 }
 
 /**
@@ -235,7 +239,7 @@ export class SimBrain {
         // mostly comfortable light, sometimes drifting too dark or too bright
         if (this.t > this.nextAction) {
           const drift = r() < 0.2 ? (r() < 0.5 ? -1 : 1) * 0.35 : (r() - 0.5) * 0.2;
-          this.target = clamp(0.5 + drift * (0.4 + 0.6 * k));
+          this.target = clamp((ctx.clear[0] + ctx.clear[1]) / 2 + drift * (0.4 + 0.6 * k));
           this.nextAction = this.t + 4 + r() * 8;
         }
         applyInput(p, { t: 'value', v: ease(this.target, 0.8) }, now);
@@ -268,7 +272,7 @@ export class SimBrain {
         // a steady murmur, with moments of silence when the streets come apart
         if (this.t > this.nextAction) {
           const quiet = r() < 0.18;
-          this.target = quiet ? 0.08 : clamp(0.45 + 0.3 * k + (r() - 0.5) * 0.15);
+          this.target = quiet ? ctx.sound[0] * 0.5 : clamp(ctx.sound[1] * (0.7 + 0.3 * k) + (r() - 0.5) * 0.15);
           this.nextAction = this.t + (quiet ? 1.5 + r() * 2 : 5 + r() * 10);
         }
         applyInput(p, { t: 'value', v: ease(this.target, 1.5) }, now);

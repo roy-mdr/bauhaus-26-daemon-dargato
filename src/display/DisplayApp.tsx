@@ -2,10 +2,9 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import QRCode from 'qrcode';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { HEART_ZONE } from '../../shared/config';
 import type { DevInput, EndCause, Snapshot } from '../../shared/protocol';
-import { roleInfo } from '../../shared/roles';
-import type { World, WorldEvent } from '../../shared/types';
+import { SENSE_ORDER, roleInfo } from '../../shared/roles';
+import type { SenseId, World, WorldEvent } from '../../shared/types';
 import { connect, hello, joinUrl } from '../net';
 import { DisplayAudio } from './audio';
 import { Home } from './Home';
@@ -173,7 +172,7 @@ export default function DisplayApp() {
       )}
 
       <Vignette snap={snap} />
-      <HeartMeter />
+      <SenseMeters />
 
       {phase === 'lobby' && (
         <div className="lobby">
@@ -253,21 +252,51 @@ function Vignette({ snap }: { snap: Snapshot | null }) {
   return <div ref={ref} className="vignette" data-phase={snap?.phase} />;
 }
 
-/** HEARTBEAT: the pulse to tap along with, and the slider of how the hearts are doing */
-function HeartMeter() {
+/** what each sense's meter shows: its track's end labels, and whether it is centred (-1..1) or filled (0..1) */
+const METER: Record<SenseId, { lo: string; hi: string; kind: 'mark' | 'fill' | 'centre' }> = {
+  direction: { lo: 'left', hi: 'right', kind: 'centre' },
+  speed: { lo: 'still', hi: 'running', kind: 'fill' },
+  memory: { lo: 'silence', hi: 'loud', kind: 'mark' },
+  heartbeat: { lo: 'too slow', hi: 'too fast', kind: 'centre' },
+  sight: { lo: 'dark', hi: 'blinding', kind: 'mark' },
+  instinct: { lo: 'asleep', hi: 'glowing', kind: 'fill' },
+};
+
+/**
+ * One meter per sense along the bottom. SIGHT and MEMORY also show their target,
+ * which moves along the way home: far away a little light and sound are enough, near home they need more.
+ * HEARTBEAT keeps its pulse to tap along with.
+ */
+function SenseMeters() {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let raf = 0;
     const loop = () => {
       const s = store.latest;
-      const el = ref.current;
-      if (el && s) {
+      const root = ref.current;
+      if (root && s) {
         const show = s.phase === 'lobby' || s.phase === 'intro' || s.phase === 'journey';
-        el.style.opacity = show ? '1' : '0';
-        el.style.setProperty('--beat', String(store.fx.beat));
-        el.style.setProperty('--pos', String(s.inner.heart));
-        el.style.setProperty('--strain', String(store.fx.strain));
-        el.dataset.off = Math.abs(s.inner.heart) > HEART_ZONE ? '1' : '0';
+        root.style.opacity = show ? '1' : '0';
+        const I = s.inner;
+        const { sight, sound, heart } = s.targets;
+        const set = (sense: SenseId, pos: number, off: boolean, zone?: [number, number]) => {
+          const el = root.querySelector<HTMLElement>(`[data-sense="${sense}"]`);
+          if (!el) return;
+          el.style.setProperty('--pos', String(pos));
+          el.dataset.off = off ? '1' : '0';
+          if (zone) {
+            el.style.setProperty('--lo', String(zone[0]));
+            el.style.setProperty('--hi', String(zone[1]));
+          }
+        };
+        set('sight', I.sight, I.light < 0.5 || I.glare > 0.4, sight);
+        set('memory', s.loudness, I.cohesion < 0.3, sound);
+        set('speed', I.paws, false);
+        set('direction', I.turn, false);
+        set('instinct', I.instinct, false);
+        set('heartbeat', I.heart, Math.abs(I.heart) > heart, [0.5 - heart / 2, 0.5 + heart / 2]);
+        root.style.setProperty('--beat', String(store.fx.beat));
+        root.style.setProperty('--strain', String(store.fx.strain));
       }
       raf = requestAnimationFrame(loop);
     };
@@ -275,16 +304,26 @@ function HeartMeter() {
     return () => cancelAnimationFrame(raf);
   }, []);
   return (
-    <div ref={ref} className="heart-meter">
-      <div className="heart-pulse" />
-      <div className="heart-track">
-        <div className="heart-zone" />
-        <div className="heart-mark" />
-      </div>
-      <div className="heart-labels">
-        <span>too slow</span>
-        <span>too fast</span>
-      </div>
+    <div ref={ref} className="sense-meters">
+      {SENSE_ORDER.map((sense) => {
+        const m = METER[sense];
+        return (
+          <div key={sense} className={`sense-meter ${m.kind}`} data-sense={sense}>
+            <div className="sense-name">
+              {sense === 'heartbeat' && <span className="heart-pulse" />}
+              {roleInfo({ sense }).name}
+            </div>
+            <div className="sense-track">
+              <div className="sense-zone" />
+              <div className="sense-mark" />
+            </div>
+            <div className="sense-labels">
+              <span>{m.lo}</span>
+              <span>{m.hi}</span>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

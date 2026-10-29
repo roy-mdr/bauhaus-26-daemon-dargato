@@ -1,5 +1,4 @@
 // Mutable store shared by the 3D scene (read every frame, no React re-renders).
-import { HEART_ZONE } from '../../shared/config';
 import type { Snapshot } from '../../shared/protocol';
 import type { World, WorldEvent } from '../../shared/types';
 import { lerpAngle } from '../../shared/graph';
@@ -53,8 +52,10 @@ export function updateFx(dt: number) {
   fx.light = ease(fx.light, 1 - (1 - I.light) * k, 3);
   fx.glare = ease(fx.glare, I.glare * k, 3);
   fx.disperse = ease(fx.disperse, (1 - I.cohesion) * k, 2.5);
-  fx.red = ease(fx.red, I.instinct * k, 3);
-  fx.steady = ease(fx.steady, live ? 1 - Math.min(1, Math.max(0, Math.abs(I.heart) - HEART_ZONE) / 0.4) : 1, 4);
+  // the red way home only shows while his eyes are clear: too dark or blinded, he cannot see it
+  const sees = Math.min(1, Math.max(0, (I.light - 0.5) / 0.35)) * Math.min(1, Math.max(0, (0.4 - I.glare) / 0.25));
+  fx.red = ease(fx.red, I.instinct * k * sees, 3);
+  fx.steady = ease(fx.steady, live ? 1 - Math.min(1, Math.max(0, Math.abs(I.heart) - s.targets.heart) / 0.4) : 1, 4);
   fx.strain = ease(fx.strain, I.strain, 4);
   const ph = (((serverNow() / 1000) * s.heartBpm) / 60) % 1;
   fx.beat = Math.pow(Math.max(0, Math.cos(ph * Math.PI * 2)), 14);

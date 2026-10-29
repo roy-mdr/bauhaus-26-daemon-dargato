@@ -1,6 +1,6 @@
 // One installation session: lobby -> intro -> journey -> arrival/sleep -> summary -> lobby.
 // Owns the authoritative simulation (cat, players, objectives).
-import { DEFAULT_CONFIG, HEART_ZONE, heartPosition, type SessionConfig } from '../shared/config';
+import { DEFAULT_CONFIG, clearBand, heartPosition, heartZone, senseCurves, type SessionConfig } from '../shared/config';
 import { clamp } from '../shared/graph';
 import type { DevInput, DirectorCommand, DirectorState, EndCause, JourneySummary, PhoneInput, PhoneState, PlayerPublic, SensorStatus, Snapshot } from '../shared/protocol';
 import { SENSE_ORDER, roleInfo } from '../shared/roles';
@@ -85,6 +85,8 @@ export class Session {
   phase: Phase = 'lobby';
   phaseT = 0;
   journeyT = 0;
+  /** how close he is to home, 0 at the start .. 1 at home (eased); SIGHT and MEMORY ask for more as it rises */
+  near = 0;
   paused = false;
   events: WorldEvent[] = [];
   summary: JourneySummary | null = null;
@@ -150,6 +152,7 @@ export class Session {
     this.world = generateWorld(seed);
     this.cat = new CatSim(this.world, this.catHooks(), `${seed}:${this.journeyCount}`);
     this.cat.cfgSpeed = this.config.catSpeed;
+    this.near = 0;
     this.narrative = new Narrative(this.world, new Rng('story:' + seed + ':' + this.journeyCount));
     this.events = [];
     this.plannedCache = null;
@@ -377,23 +380,28 @@ export class Session {
     const S = this.senses;
     const cfg = this.config;
     const ease = (cur: number, target: number, up: number, down = up) => cur + (target - cur) * Math.min(1, dt * (target > cur ? up : down));
-    // SIGHT: a comfortable band in the middle; below it the night closes in, above it the glare
+    // far from home little light and sound are enough; nearing home he needs more of both
+    const d0 = this.world.distHome[this.world.start] || 1;
+    this.near = ease(this.near, clamp(1 - this.cat.distanceToHome / d0), 0.5);
+    const curve = senseCurves(this.near, cfg.sightWidth, cfg.soundWidth);
+    // SIGHT: a comfortable band; below it the night closes in, above it the glare
     I.sight = ease(I.sight, S.sight, 3);
-    I.light = 0.06 + 0.94 * smoothstep(0.02, 0.38, I.sight);
-    I.glare = smoothstep(0.64, 1, I.sight);
+    I.light = 0.06 + 0.94 * smoothstep(curve.dark[0], curve.dark[1], I.sight);
+    I.glare = smoothstep(curve.glare[0], curve.glare[1], I.sight);
     I.paws = S.paws;
     I.turn = S.turn;
     // MEMORY: sound pulls the paths together; in silence they come apart, more slowly
-    I.cohesion = ease(I.cohesion, smoothstep(0.04, 0.42, S.memory), 1.4, 0.45);
+    I.cohesion = ease(I.cohesion, smoothstep(curve.sound[0], curve.sound[1], S.memory), 1.4, 0.45);
     // INSTINCT; in the final stretch the way home starts to glow by itself
     const late = this.journeyT > cfg.maxDurationSec ? 0.35 + 0.5 * clamp((this.journeyT - cfg.maxDurationSec) / Math.max(1, cfg.finalGraceSec)) : 0;
     I.instinct = ease(I.instinct, Math.max(S.instinct, late), 2.5, 0.4);
     // HEARTBEAT: off the beat (or no taps) builds strain; on the beat it recovers
     I.heartRate = S.heartRate;
     I.heart = S.heartKept ? heartPosition(S.heartRate, cfg.heartBpm) : 0;
-    const off = clamp((Math.abs(I.heart) - HEART_ZONE) / 0.4);
+    const zone = heartZone(cfg.heartWidth);
+    const off = clamp((Math.abs(I.heart) - zone) / 0.4);
     if (this.phase !== 'journey' || this.journeyT < 4) I.strain = ease(I.strain, 0, 1);
-    else if (Math.abs(I.heart) > HEART_ZONE) I.strain = clamp(I.strain + (dt * (0.35 + 0.65 * off)) / cfg.heartFailSec);
+    else if (Math.abs(I.heart) > zone) I.strain = clamp(I.strain + (dt * (0.35 + 0.65 * off)) / cfg.heartFailSec);
     else I.strain = clamp(I.strain - dt / (cfg.heartFailSec * 0.8));
   }
 
@@ -434,7 +442,7 @@ export class Session {
       tickPlayer(p, dt, this.now, graceSec);
       if (p.kind === 'phone' && !p.connected && this.now - p.disconnectedAt > graceSec * 1000) this.players.delete(p.id);
     }
-    const ctx: SimContext = { steer: this.phase === 'journey' ? this.cat.steerHome() : 0, heartBpm: this.config.heartBpm };
+    const ctx: SimContext = { steer: this.phase === 'journey' ? this.cat.steerHome() : 0, heartBpm: this.config.heartBpm, clear: clearBand(this.near, this.config.sightWidth), sound: senseCurves(this.near, 1, this.config.soundWidth).sound };
     for (const [id, brain] of this.bots) {
       if (this.players.has(id)) brain.think(dt, this.now, ctx);
     }
@@ -514,7 +522,7 @@ export class Session {
       fast: this.cat.speed > cfg.catSpeed * 0.6,
       pathsHeld: I.cohesion > 0.7,
       wayShown: I.instinct > 0.5,
-      onBeat: Math.abs(I.heart) < HEART_ZONE,
+      onBeat: Math.abs(I.heart) < heartZone(this.config.heartWidth),
     });
     if (I.strain >= 1) this.endJourney(I.heart < 0 ? 'slow' : 'fast');
     else if (this.journeyT > this.hardLimit()) this.endJourney('time');
@@ -590,6 +598,13 @@ export class Session {
       inner: this.cat.I,
       planned: this.tickCount % 15 === 0 || !this.plannedCache ? (this.plannedCache = this.cat.plannedRoute()) : this.plannedCache,
       homeReveal: this.homeReveal(),
+      near: this.near,
+      loudness: this.senses.memory,
+      targets: {
+        sight: clearBand(this.near, this.config.sightWidth),
+        sound: senseCurves(this.near, 1, this.config.soundWidth).sound,
+        heart: heartZone(this.config.heartWidth),
+      },
       heartBpm: this.config.heartBpm,
       players: this.publicPlayers(),
       realPlayers: this.holders().length,
@@ -615,7 +630,7 @@ export class Session {
       phase: this.phase,
       paused: this.paused,
       players: this.holders().length,
-      cue: { level: levelFor(p.role.sense, this.cat.I, this.cat.speed / Math.max(0.1, this.config.catSpeed)), tempo: this.config.heartBpm },
+      cue: { level: levelFor(p.role.sense, this.cat.I, this.cat.speed / Math.max(0.1, this.config.catSpeed)), tempo: this.config.heartBpm, band: clearBand(this.near, this.config.sightWidth), heartZone: heartZone(this.config.heartWidth) },
       feedback: this.feedbackFor(p),
       sensitivity: this.config.sensitivity[p.role.sense],
       summary: (this.phase === 'summary' || this.phase === 'arrival' || this.phase === 'sleep') && this.summary ? this.summary.players.find((s) => s.playerId === p.id) ?? null : null,
@@ -641,9 +656,10 @@ export class Session {
       case 'memory':
         return I.cohesion > 0.7 ? 'He remembers the streets.' : I.cohesion > 0.3 ? 'The paths are fading...' : 'The streets have fallen apart.';
       case 'instinct':
+        if (I.instinct > 0.15 && (I.light < 0.5 || I.glare > 0.4)) return 'The way glows, but his eyes cannot see it.';
         return I.instinct > 0.5 ? 'The way home glows red.' : I.instinct > 0.15 ? 'A faint red pull...' : 'His instinct sleeps.';
       case 'heartbeat':
-        return I.heart < -HEART_ZONE ? 'Faster: his heart is fading!' : I.heart > HEART_ZONE ? 'Slower: his heart is racing!' : 'His heart beats steadily.';
+        return I.heart < -heartZone(this.config.heartWidth) ? 'Faster: his heart is fading!' : I.heart > heartZone(this.config.heartWidth) ? 'Slower: his heart is racing!' : 'His heart beats steadily.';
     }
   }
 
@@ -806,7 +822,10 @@ function sanitizeConfig(patch: Partial<SessionConfig>): Partial<SessionConfig> {
   if ('finalGraceSec' in patch) set('finalGraceSec', num(patch.finalGraceSec, 0, 600));
   if ('catSpeed' in patch) set('catSpeed', num(patch.catSpeed, 0.5, 8));
   if ('heartBpm' in patch) set('heartBpm', num(patch.heartBpm, 40, 140));
-  if ('heartFailSec' in patch) set('heartFailSec', num(patch.heartFailSec, 3, 60));
+  if ('heartFailSec' in patch) set('heartFailSec', num(patch.heartFailSec, 1, 60));
+  if ('sightWidth' in patch) set('sightWidth', num(patch.sightWidth, 0.2, 1.5));
+  if ('soundWidth' in patch) set('soundWidth', num(patch.soundWidth, 0.2, 1.5));
+  if ('heartWidth' in patch) set('heartWidth', num(patch.heartWidth, 0.2, 1.5));
   if ('fogDensity' in patch) set('fogDensity', num(patch.fogDensity, 0, 0.1));
   if ('lightIntensity' in patch) set('lightIntensity', num(patch.lightIntensity, 0.1, 3));
   if ('simulateMissing' in patch) set('simulateMissing', !!patch.simulateMissing);

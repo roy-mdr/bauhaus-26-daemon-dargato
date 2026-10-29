@@ -65,52 +65,77 @@ button {
   --red: 0;
   background: radial-gradient(ellipse at center, transparent 55%, rgba(20, 20, 20, 0.35) 100%), radial-gradient(ellipse at center, transparent 60%, rgba(195, 34, 28, calc(var(--red) * 1)) 100%);
 }
-/* HEARTBEAT: the pulse to tap with, and a slider of how the hearts keep up */
-.heart-meter {
+/* one meter per sense along the bottom; SIGHT and MEMORY show a target that moves along the way home */
+.sense-meters {
   position: absolute;
   left: 50%;
   bottom: 22px;
   transform: translateX(-50%);
-  width: min(320px, 70vw);
+  /* leave room for the join code in the corner */
+  width: min(1080px, calc(100vw - 440px));
   display: grid;
-  grid-template-columns: auto 1fr;
-  grid-template-rows: auto auto;
-  column-gap: 14px;
-  align-items: center;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 28px;
   pointer-events: none;
   transition: opacity 1s;
   --beat: 0;
-  --pos: 0;
   --strain: 0;
 }
+.sense-meter {
+  --pos: 0;
+  --lo: 0;
+  --hi: 0;
+}
+.sense-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 18px;
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  color: var(--charcoal);
+  text-shadow: 0 0 6px rgba(239, 237, 232, 0.9);
+}
+/* HEARTBEAT: the pulse to tap with */
 .heart-pulse {
-  grid-row: 1 / span 2;
-  width: 22px;
-  height: 22px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: var(--red);
   opacity: calc(0.35 + var(--beat) * 0.65);
   transform: scale(calc(0.75 + var(--beat) * 0.55));
-  box-shadow: 0 0 calc(var(--beat) * 18px) rgba(195, 34, 28, 0.8);
+  box-shadow: 0 0 calc(var(--beat) * 14px) rgba(195, 34, 28, 0.8);
 }
-.heart-track {
+.sense-track {
   position: relative;
   height: 6px;
   background: rgba(150, 148, 143, 0.35);
+}
+.sense-meter[data-sense='heartbeat'] .sense-track {
   box-shadow: 0 0 0 calc(var(--strain) * 3px) rgba(195, 34, 28, calc(var(--strain) * 0.5));
 }
-.heart-zone {
+/* the target: where this sense should be right now */
+.sense-zone {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 35%;
-  width: 30%;
+  left: calc(var(--lo) * 100%);
+  width: calc((var(--hi) - var(--lo)) * 100%);
   background: rgba(56, 55, 53, 0.35);
+  transition: left 0.6s linear, width 0.6s linear;
 }
-.heart-mark {
+/* MEMORY has no ceiling: the paths begin to hold at the start of the ramp and hold fully from its end on */
+.sense-meter[data-sense='memory'] .sense-zone {
+  width: auto;
+  right: 0;
+  background: linear-gradient(90deg, transparent 0, rgba(56, 55, 53, 0.35) calc((var(--hi) - var(--lo)) / (1 - var(--lo)) * 100%));
+}
+.sense-mark {
   position: absolute;
   top: -5px;
-  left: calc(50% + var(--pos) * 50%);
+  left: calc(var(--pos) * 100%);
   width: 4px;
   height: 16px;
   margin-left: -2px;
@@ -118,14 +143,30 @@ button {
   box-shadow: 0 0 0 1px rgba(239, 237, 232, 0.6);
   transition: left 0.2s linear;
 }
-.heart-meter[data-off='1'] .heart-mark {
+.sense-meter.centre .sense-mark {
+  left: calc(50% + var(--pos) * 50%);
+}
+/* speed and instinct simply fill up */
+.sense-meter.fill .sense-zone {
+  left: 0;
+  width: calc(var(--pos) * 100%);
+  background: var(--charcoal);
+  transition: width 0.2s linear;
+}
+.sense-meter[data-sense='instinct'] .sense-zone {
   background: var(--red);
 }
-.heart-labels {
+.sense-meter.fill .sense-mark {
+  display: none;
+}
+.sense-meter[data-off='1'] .sense-mark {
+  background: var(--red);
+}
+.sense-labels {
   display: flex;
   justify-content: space-between;
-  font-size: 10px;
-  letter-spacing: 0.25em;
+  font-size: 9px;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--charcoal);
   opacity: 0.7;
@@ -140,7 +181,8 @@ button {
   display: grid;
   grid-template-columns: 1fr auto;
   grid-template-rows: 1fr auto auto;
-  padding: 5vh 5vw;
+  /* keep clear of the sense meters along the bottom */
+  padding: 5vh 5vw calc(5vh + 80px);
   gap: 2vh;
 }
 .lobby-title h1 {

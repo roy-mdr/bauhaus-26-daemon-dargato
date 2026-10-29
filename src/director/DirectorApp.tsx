@@ -190,7 +190,7 @@ export default function DirectorApp() {
               <Num label="light" value={cfg.lightIntensity} min={0.2} max={2} step={0.05} onChange={(v) => patch({ lightIntensity: v })} />
               <Num label="top speed (m/s)" value={cfg.catSpeed} min={0.8} max={6} step={0.1} onChange={(v) => patch({ catSpeed: v })} />
               <Num label="pulse (bpm)" value={cfg.heartBpm} min={40} max={140} step={1} onChange={(v) => patch({ heartBpm: v })} />
-              <Num label="heart gives up after (s)" value={cfg.heartFailSec} min={3} max={60} step={1} onChange={(v) => patch({ heartFailSec: v })} />
+              <Num label="heart gives up after (s)" value={cfg.heartFailSec} min={1} max={60} step={1} onChange={(v) => patch({ heartFailSec: v })} />
               <Num label="soft limit (s)" value={cfg.maxDurationSec} min={120} max={900} step={10} onChange={(v) => patch({ maxDurationSec: v })} />
               <Num label="final grace (s)" value={cfg.finalGraceSec} min={0} max={300} step={10} onChange={(v) => patch({ finalGraceSec: v })} />
               <Num label="summary (s)" value={cfg.summarySec} min={5} max={120} step={5} onChange={(v) => patch({ summarySec: v })} />
@@ -200,6 +200,9 @@ export default function DirectorApp() {
               {SENSE_ORDER.map((sense) => (
                 <Num key={sense} label={`${sense} sensitivity`} value={cfg.sensitivity[sense]} min={0} max={2.5} step={0.05} onChange={(v) => d.cmd({ c: 'config', patch: { sensitivity: { ...cfg.sensitivity, [sense]: v } } })} />
               ))}
+              <Num label="sight target width" value={cfg.sightWidth} min={0.2} max={1.5} step={0.05} onChange={(v) => patch({ sightWidth: v })} />
+              <Num label="sound target width" value={cfg.soundWidth} min={0.2} max={1.5} step={0.05} onChange={(v) => patch({ soundWidth: v })} />
+              <Num label="heartbeat target width" value={cfg.heartWidth} min={0.2} max={1.5} step={0.05} onChange={(v) => patch({ heartWidth: v })} />
               <Toggle label="simulate senses nobody plays" value={cfg.simulateMissing} onChange={(v) => patch({ simulateMissing: v })} />
               <Num label="simulation intensity" value={cfg.simIntensity} min={0} max={1} step={0.05} onChange={(v) => patch({ simIntensity: v })} />
               <Toggle label="reshuffle roles each journey" value={cfg.reshuffleRoles} onChange={(v) => patch({ reshuffleRoles: v })} />
