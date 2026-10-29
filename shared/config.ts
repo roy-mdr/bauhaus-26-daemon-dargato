@@ -26,6 +26,10 @@ export interface SessionConfig {
   simIntensity: number;
   /** reshuffle roles each new journey */
   reshuffleRoles: boolean;
+  /** show the tutorial (each sense, its phone sensor and its effect) between the lobby and the journey */
+  tutorial: boolean;
+  /** seconds the tutorial stays before the journey begins by itself (0: until the host starts it) */
+  tutorialSec: number;
   /** start automatically when real players are present */
   autoStart: boolean;
   autoStartDelaySec: number;
@@ -56,6 +60,8 @@ export const DEFAULT_CONFIG: SessionConfig = {
   simulateMissing: true,
   simIntensity: 0.6,
   reshuffleRoles: true,
+  tutorial: true,
+  tutorialSec: 60,
   autoStart: false,
   autoStartDelaySec: 45,
   autoStartMinPlayers: 2,
@@ -64,6 +70,13 @@ export const DEFAULT_CONFIG: SessionConfig = {
   whispers: true,
   reconnectGraceSec: 120,
 };
+
+/**
+ * the intro before the journey: the camera circles home once, flies over the district to
+ * Dargato's starting point, then settles behind him (seconds)
+ */
+export const INTRO = { home: 7, fly: 6, settle: 2 };
+export const INTRO_SEC = INTRO.home + INTRO.fly + INTRO.settle;
 
 /** heartbeat slider position for a tap rate: -1 too slow (or no taps) .. 0 on the beat .. 1 too fast */
 export function heartPosition(bpm: number, target: number): number {

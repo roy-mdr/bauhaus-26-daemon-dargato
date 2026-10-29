@@ -135,7 +135,7 @@ io.on('connection', (socket: Socket) => {
     if (kind === 'display' || authed) session.devInput(d);
   });
   socket.on('displayStart', () => {
-    if (kind === 'display' && session.config.displayKeyboard) session.start();
+    if (kind === 'display' && session.config.displayKeyboard) session.advance();
   });
 
   socket.on('cmd', (cmd: DirectorCommand) => {

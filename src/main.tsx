@@ -6,6 +6,7 @@ const DisplayApp = lazy(() => import('./display/DisplayApp'));
 const PhoneApp = lazy(() => import('./phone/PhoneApp'));
 const DirectorApp = lazy(() => import('./director/DirectorApp'));
 const DebugApp = lazy(() => import('./debug/DebugApp'));
+const TutorialPage = lazy(() => import('./display/Tutorial'));
 
 function Router() {
   const path = window.location.pathname.replace(/\/+$/, '') || '/';
@@ -22,6 +23,7 @@ function Router() {
     return <DebugApp />;
   }
   document.body.classList.add('display-body');
+  if (path.startsWith('/tutorial')) return <TutorialPage />;
   return <DisplayApp />;
 }
 

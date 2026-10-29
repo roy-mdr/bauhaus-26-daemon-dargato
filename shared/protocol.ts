@@ -84,6 +84,8 @@ export interface Snapshot {
   realPlayers: number;
   render: { fog: number; light: number; whispers: boolean; keyboard: boolean };
   autoStartIn: number;
+  /** seconds until the tutorial ends by itself (-1: it waits for the host, or no tutorial) */
+  tutorialIn: number;
   ending: null | 'home' | 'sleep';
   endCause: EndCause | null;
   summary: JourneySummary | null;

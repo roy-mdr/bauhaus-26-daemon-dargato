@@ -7,7 +7,8 @@
 //  4. extra edges -> loops and alternate routes (fewer near the start, more later)
 //  5. diagonal pedestrian shortcuts, dead-end stubs with discoveries, curved streets
 //  6. clearance validation (no crossings, no corridors touching) with local repairs
-//  7. start + distant home chosen by graph distance to target a 5-10 minute journey
+//  7. start + distant home: set apart from the district at the end of its own street,
+//     chosen by graph distance to target a 5-10 minute journey
 //  8. widths, surfaces, effects, plazas, landmarks, route-hint strengths
 //  9. final connectivity + reachability validation
 
@@ -63,6 +64,18 @@ interface ProtoEdge {
 }
 
 const WIDTH: Record<EdgeKind, number> = { main: 7.5, street: 5, alley: 2.6, path: 2.2 };
+
+/** length of home's own street out of the district */
+const HOME_REACH = 44;
+/** no other crossing comes closer to home than this (its red field reaches homeField(r).radius) */
+const HOME_GAP = 40;
+
+function segPointDist(a: Vec2, b: Vec2, x: number, z: number): number {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz || 1)));
+  return Math.hypot(x - a.x - t * dx, z - a.z - t * dz);
+}
 
 export function generateWorld(seed: string, params: Partial<WorldParams> = {}): World {
   const p = { ...DEFAULT_WORLD_PARAMS, ...params };
@@ -381,24 +394,86 @@ function attemptWorld(seed: string, attempt: number, p: WorldParams): World | st
   }
 
   // ---- 7. home selection ----
+  // home never sits among the other crossings: it lies apart from the district, at the end of
+  // its own street leading out from an anchor node chosen for the length of the journey
   const dStart = dijkstra(nodes, gEdges, start);
   const startNode = nodes[start];
-  let home = -1;
-  let best = Infinity;
-  for (const n of nodes) {
-    if (n.id === start) continue;
-    const pn = proto[[...remap.entries()].find(([, v]) => v === n.id)![0]];
-    if (pn.stub || pn.gp < 0.55) continue;
-    if (n.edges.length > 3) continue;
-    const minLen = Math.min(...n.edges.map((eid) => gEdges[eid].length));
-    if (minLen < 15) continue;
-    const score = Math.abs(dStart[n.id] - p.targetPathLength) + rng.next() * 8;
-    if (score < best) {
-      best = score;
-      home = n.id;
+  const cx = nodes.reduce((s, n) => s + n.x, 0) / nodes.length;
+  const cz = nodes.reduce((s, n) => s + n.z, 0) / nodes.length;
+  const anchors = nodes
+    .filter((n) => {
+      if (n.id === start || n.edges.length > 3) return false;
+      const pn = proto[[...remap.entries()].find(([, v]) => v === n.id)![0]];
+      return !pn.stub && pn.gp >= 0.45;
+    })
+    .map((n) => ({ n, score: Math.abs(dStart[n.id] + HOME_REACH - p.targetPathLength) + rng.next() * 8 }))
+    .sort((a, b) => a.score - b.score);
+  let spot: { anchor: GraphNode; x: number; z: number } | null = null;
+  for (const { n } of anchors.slice(0, 40)) {
+    // outward: away from its own streets and from the middle of the district
+    let ox = n.x - cx;
+    let oz = n.z - cz;
+    for (const eid of n.edges) {
+      const m = nodes[otherNode(gEdges[eid], n.id)];
+      const d = Math.hypot(n.x - m.x, n.z - m.z) || 1;
+      ox += ((n.x - m.x) / d) * 30;
+      oz += ((n.z - m.z) / d) * 30;
     }
+    const base = Math.atan2(ox, oz);
+    for (const dev of [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9]) {
+      const a = base + dev;
+      // keep clear of its own streets leaving the anchor
+      if (n.edges.some((eid) => Math.abs(Math.atan2(Math.sin(a - leaveHeading(gEdges[eid], n.id)), Math.cos(a - leaveHeading(gEdges[eid], n.id)))) < 0.7)) continue;
+      const x = n.x + Math.sin(a) * HOME_REACH;
+      const z = n.z + Math.cos(a) * HOME_REACH;
+      if (nodes.some((m) => m.id !== n.id && Math.hypot(m.x - x, m.z - z) < HOME_GAP)) continue;
+      // no other street near home, and the new street touches none of them
+      let clear = true;
+      for (const e of gEdges) {
+        if (e.a === n.id || e.b === n.id) continue;
+        for (let k = 1; k < e.points.length && clear; k++) {
+          const q0 = e.points[k - 1];
+          const q1 = e.points[k];
+          if (segPointDist(q0, q1, x, z) - e.width / 2 < HOME_GAP - 6) clear = false;
+          for (let t = 0.2; t <= 1 && clear; t += 0.1) {
+            if (segPointDist(q0, q1, n.x + (x - n.x) * t, n.z + (z - n.z) * t) - e.width / 2 < 9) clear = false;
+          }
+        }
+        if (!clear) break;
+      }
+      if (clear) {
+        spot = { anchor: n, x, z };
+        break;
+      }
+    }
+    if (spot) break;
   }
-  if (home < 0) return 'no home candidate';
+  if (!spot) return 'no home candidate';
+  const home = nodes.length;
+  nodes.push({ id: home, x: spot.x, z: spot.z, kind: 'junction', r: 2, gi: -1, gj: -1, progress: 0, edges: [] });
+  {
+    const points = polyline(spot.anchor, nodes[home], 0);
+    const cum = computeCum(points);
+    const ge: GraphEdge = {
+      id: gEdges.length,
+      a: spot.anchor.id,
+      b: home,
+      kind: 'street',
+      width: WIDTH.street,
+      surface: 'paved',
+      length: cum[cum.length - 1],
+      traversability: 1.05,
+      landmarkVisibility: 0.4,
+      hintStrength: 0.6,
+      effect: 'none',
+      curved: false,
+      points,
+      cum,
+    };
+    gEdges.push(ge);
+    spot.anchor.edges.push(ge.id);
+    nodes[home].edges.push(ge.id);
+  }
   const distHome = dijkstra(nodes, gEdges, home);
   for (const n of nodes) {
     const ds = dStart[n.id];

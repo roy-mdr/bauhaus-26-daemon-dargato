@@ -8,6 +8,7 @@ together, another keeps his heart going. There is one shared goal: get Dargato h
 
 - **Main display** `/` — third-person view, QR code and join code, no HUD
 - **Phones** `/join?c=CODE` — one sense per phone, calibration, manual fallback controls
+- **Tutorial** `/tutorial` — each sense, its phone sensor and a live picture of its effect, plus what home looks like (also shown on the main display between the lobby and the journey)
 - **Director** `/director` — host-only control panel (key required)
 - **Debug** `/debug` — sensor tests on the device, live phone inputs, bots, generator check
 
@@ -20,7 +21,7 @@ npm install
 npm run dev
 ```
 
-- Main display: <http://localhost:5280/> (click once for sound, press **Enter** to start)
+- Main display: <http://localhost:5280/> (click once for sound, press **Enter** to show the tutorial, **Enter** again to start)
 - Director: <http://localhost:5280/director> (key `dargato`, printed in the console)
 - Phones: scan the QR code on the display. On localhost the QR points to the computer's LAN address.
 

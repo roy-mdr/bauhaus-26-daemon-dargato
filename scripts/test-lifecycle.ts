@@ -1,7 +1,7 @@
 // Session lifecycle: night-ending fallbacks, the heartbeat, the senses' effects, director commands, role assignment.
 import assert from 'node:assert/strict';
 import { Session, TICK_HZ, type Outbox } from '../server/session';
-import { clearBand, senseCurves } from '../shared/config';
+import { INTRO_SEC, clearBand, senseCurves } from '../shared/config';
 import type { SenseId } from '../shared/types';
 
 const out: Outbox = { displays() {}, directors() {}, phone() {}, counts: () => ({ displays: 0, phones: 0, directors: 0, debug: 0 }) };
@@ -49,7 +49,7 @@ assert.ok(steady.cat.I.strain < 0.5, `strain ${steady.cat.I.strain}`);
 // MEMORY: silence scatters the paths and he cannot walk, even with his paws moving
 const m = new Session('M', { seed: 'z' }, out);
 m.start();
-run(m, 10);
+run(m, INTRO_SEC + 1);
 run(m, 6, undefined, () => {
   m.devInput({ sense: 'memory', hold: 0 });
   m.devInput({ sense: 'speed', hold: 1 });
@@ -102,12 +102,28 @@ run(m, 2, undefined, () => m.devInput({ sense: 'instinct', hold: 1 }));
 assert.ok(m.cat.I.instinct > 0.8);
 assert.ok(m.snapshot().planned.length > 0);
 
+// the host's start opens the tutorial first; starting again (or waiting) begins the journey
+const tut = new Session('T', { seed: 'z', tutorialSec: 5 }, out);
+tut.advance();
+assert.equal(tut.phase, 'tutorial');
+run(tut, 2);
+assert.equal(tut.phase, 'tutorial');
+tut.advance();
+assert.equal(tut.phase, 'intro');
+const tut2 = new Session('T2', { seed: 'z', tutorialSec: 5 }, out);
+tut2.advance();
+run(tut2, 6);
+assert.notEqual(tut2.phase, 'tutorial');
+const noTut = new Session('T3', { seed: 'z', tutorial: false }, out);
+noTut.advance();
+assert.equal(noTut.phase, 'intro');
+
 // director commands
 const c = new Session('C', { seed: 'z' }, out);
 c.command({ c: 'setSeed', seed: 'weimar' });
 assert.equal(c.world.seed, 'weimar');
 c.command({ c: 'start' });
-run(c, 10);
+run(c, INTRO_SEC + 1);
 assert.equal(c.phase, 'journey');
 c.command({ c: 'pause' });
 const x0 = c.cat.x;

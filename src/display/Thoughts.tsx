@@ -4,7 +4,7 @@
 import { useFrame, useThree } from '@react-three/fiber';
 import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
-import { heartPosition } from '../../shared/config';
+import { INTRO, heartPosition } from '../../shared/config';
 import { wrapAngle } from '../../shared/graph';
 import type { PlayerPublic } from '../../shared/protocol';
 import { hashString } from '../../shared/rng';
@@ -297,7 +297,7 @@ export function Thoughts() {
 
     // thoughts are quiet once he is home or asleep
     const phase = snap?.phase ?? 'lobby';
-    const pe = phase === 'journey' ? 1 : phase === 'intro' ? Math.min(1, (snap?.phaseT ?? 0) / 4) : phase === 'lobby' ? 0.5 : 0;
+    const pe = phase === 'journey' ? 1 : phase === 'intro' ? Math.min(1, Math.max(0, ((snap?.phaseT ?? 0) - INTRO.home - INTRO.fly * 0.5) / 4)) : phase === 'lobby' || phase === 'tutorial' ? 0.5 : 0;
     phaseEnv.current += (pe - phaseEnv.current) * (1 - Math.exp(-dt * 0.8));
 
     // sync swarms with the players in the latest snapshot

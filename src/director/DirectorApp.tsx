@@ -135,8 +135,8 @@ export default function DirectorApp() {
         <section className="col">
           <h2>Session</h2>
           <div className="buttons">
-            <button className="primary" onClick={() => d.cmd({ c: 'start' })} disabled={s?.phase !== 'lobby'}>
-              Start journey
+            <button className="primary" onClick={() => d.cmd({ c: 'start' })} disabled={s?.phase !== 'lobby' && s?.phase !== 'tutorial'}>
+              {s?.phase === 'lobby' && cfg?.tutorial ? 'Show tutorial' : 'Start journey'}
             </button>
             {s?.paused ? <button onClick={() => d.cmd({ c: 'resume' })}>Resume</button> : <button onClick={() => d.cmd({ c: 'pause' })}>Pause</button>}
             <button onClick={() => d.cmd({ c: 'reset' })}>Reset to lobby</button>
@@ -206,6 +206,8 @@ export default function DirectorApp() {
               <Toggle label="simulate senses nobody plays" value={cfg.simulateMissing} onChange={(v) => patch({ simulateMissing: v })} />
               <Num label="simulation intensity" value={cfg.simIntensity} min={0} max={1} step={0.05} onChange={(v) => patch({ simIntensity: v })} />
               <Toggle label="reshuffle roles each journey" value={cfg.reshuffleRoles} onChange={(v) => patch({ reshuffleRoles: v })} />
+              <Toggle label="tutorial before the journey" value={cfg.tutorial} onChange={(v) => patch({ tutorial: v })} />
+              {cfg.tutorial && <Num label="tutorial length (s, 0 = until started)" value={cfg.tutorialSec} min={0} max={180} step={5} onChange={(v) => patch({ tutorialSec: v })} />}
               <Toggle label="auto start" value={cfg.autoStart} onChange={(v) => patch({ autoStart: v })} />
               {cfg.autoStart && (
                 <>

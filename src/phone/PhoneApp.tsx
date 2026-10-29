@@ -172,6 +172,7 @@ export default function PhoneApp() {
         <span className={'dot' + (connected ? ' on' : '')} title={connected ? 'connected' : 'reconnecting'} />
       </header>
       {state.phase === 'lobby' && <div className="phase-note">Try your sense. The journey begins soon.</div>}
+      {state.phase === 'tutorial' && <div className="phase-note">Find {state.roleName} on the big screen and try it: the picture answers you.</div>}
       {state.paused && <div className="phase-note">paused</div>}
       {ended && state.summary ? (
         <div className="summary-card">

@@ -199,4 +199,4 @@ export interface WorldEvent {
   data?: Record<string, number | string>;
 }
 
-export type Phase = 'lobby' | 'intro' | 'journey' | 'arrival' | 'sleep' | 'summary';
+export type Phase = 'lobby' | 'tutorial' | 'intro' | 'journey' | 'arrival' | 'sleep' | 'summary';

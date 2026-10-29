@@ -12,6 +12,7 @@ import { Atmosphere, CameraRig, Dargato, DebugOverlay, SenseFx } from './Scene';
 import { Events } from './Signs';
 import { pushSnapshot, store } from './store';
 import { Thoughts } from './Thoughts';
+import { Tutorial } from './Tutorial';
 import { WorldMesh } from './WorldMesh';
 
 const audio = new DisplayAudio();
@@ -201,9 +202,11 @@ export default function DisplayApp() {
         </div>
       )}
 
+      {phase === 'tutorial' && <Tutorial snap={snap} />}
+
       {phase === 'intro' && <div className="center-text fade-in-out">Dargato wants to go home.</div>}
 
-      {(phase === 'journey' || phase === 'intro') && qr && (
+      {(phase === 'journey' || phase === 'intro' || phase === 'tutorial') && qr && (
         <div className="corner-join">
           <img src={qr} alt="" />
           <span>{code}</span>

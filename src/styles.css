@@ -173,6 +173,123 @@ button {
   margin-top: 6px;
   text-shadow: 0 0 6px rgba(239, 237, 232, 0.9);
 }
+/* TUTORIAL: one card per sense, with a live picture of its effect, and what home looks like */
+.tutorial {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 2vh;
+  padding: 4vh 4vw 3vh;
+  background: rgba(239, 237, 232, 0.9);
+  color: var(--black);
+  animation: fadeIn 1s ease-in;
+  overflow: auto;
+}
+.tutorial-head h1 {
+  margin: 0;
+  font-size: clamp(24px, 3vw, 52px);
+  font-weight: 300;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.tutorial-head p {
+  margin: 0.6vh 0 0;
+  color: var(--charcoal);
+  font-size: clamp(13px, 1.2vw, 20px);
+}
+.tutorial-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 1.6vw;
+  min-height: 0;
+}
+.tutorial-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vh;
+  min-height: 0;
+  padding: 1.4vh 1.2vw;
+  background: rgba(255, 255, 255, 0.45);
+  border-top: 4px solid var(--black);
+  font-size: clamp(11px, 0.95vw, 16px);
+  line-height: 1.35;
+}
+.tutorial-card p {
+  margin: 0;
+}
+.tutorial-card .dim {
+  color: var(--mid);
+}
+.tutorial-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tutorial-card h2 {
+  margin: 0;
+  font-size: clamp(13px, 1.2vw, 20px);
+  letter-spacing: 0.25em;
+}
+.tutorial-players {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.tutorial-players .chip {
+  padding: 2px 8px;
+  font-size: clamp(10px, 0.8vw, 14px);
+}
+.tutorial-viz {
+  width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
+  min-height: 90px;
+  max-height: 22vh;
+}
+.tutorial-sensor {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.tutorial-card.home {
+  grid-column: span 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1.4vw;
+  border-top-color: var(--red);
+}
+/* the picture must not size its own box, or it grows with every frame it draws */
+.tutorial-card.home .tutorial-viz {
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+}
+.tutorial-card.home > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vh;
+  overflow: hidden;
+}
+.tutorial-card.home h2 {
+  color: var(--red);
+}
+.tutorial-foot {
+  /* tall enough to sit beside the join code in the corner */
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  color: var(--charcoal);
+  font-size: clamp(12px, 1.1vw, 18px);
+  letter-spacing: 0.12em;
+}
+@media (max-width: 900px) {
+  .tutorial-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .lobby {
   position: absolute;
   inset: 0;
@@ -267,7 +384,7 @@ button {
   text-shadow: 0 0 30px rgba(239, 237, 232, 0.9);
 }
 .fade-in-out {
-  animation: fadeInOut 6s ease-in-out forwards;
+  animation: fadeInOut 8s ease-in-out forwards;
 }
 .slow {
   animation: fadeIn 3s ease-in forwards;

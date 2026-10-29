@@ -241,7 +241,7 @@ export class DisplayAudio {
     }
     // the pulse on screen, as a soft double thump; louder while his heart is under strain
     const ph = (((serverNow() / 1000) * snap.heartBpm) / 60) % 1;
-    if (ph < this.beatPh && (snap.phase === 'journey' || snap.phase === 'lobby')) {
+    if (ph < this.beatPh && (snap.phase === 'journey' || snap.phase === 'lobby' || snap.phase === 'tutorial')) {
       const v = 0.05 + 0.18 * fx.strain;
       this.tone(58, now, 0.18, v, this.master, 'sine', 40);
       this.tone(55, now + 0.22, 0.2, v * 0.7, this.master, 'sine', 38);

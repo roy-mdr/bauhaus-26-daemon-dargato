@@ -2,6 +2,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { lerpAngle, wrapAngle } from '../../shared/graph';
+import { INTRO } from '../../shared/config';
 import { hashString } from '../../shared/rng';
 import type { World } from '../../shared/types';
 import { CatFigure, newPose } from './CatFigure';
@@ -60,7 +61,7 @@ export function Dargato() {
 
 export function CameraRig() {
   const camera = useThree((s) => s.camera);
-  const st = useRef({ pos: new THREE.Vector3(0, 30, 30), target: new THREE.Vector3(), yaw: 0, init: false, orbit: 0, lift: 0 });
+  const st = useRef({ pos: new THREE.Vector3(0, 30, 30), target: new THREE.Vector3(), yaw: 0, init: false, orbit: 0, lift: 0, intro: false });
   useFrame((_, rawDt) => {
     const dt = Math.min(0.1, rawDt);
     const s = st.current;
@@ -81,20 +82,41 @@ export function CameraRig() {
     let rate = 2.4;
     const hesitating = c.state === 'hesitating';
     s.lift += ((hesitating ? 1 : 0) - s.lift) * (1 - Math.exp(-dt * 1.5));
+    if (phase !== 'intro') s.intro = false;
 
-    if (phase === 'lobby') {
+    if (phase === 'lobby' || phase === 'tutorial') {
       // a slow, high orbit: the district seen from above the roofs
       s.orbit += dt * 0.05;
       desiredPos.set(c.x + Math.sin(s.orbit) * 9, 44, c.z + Math.cos(s.orbit) * 9);
       rate = 1.2;
     } else if (phase === 'intro') {
-      const k = Math.min(1, phaseT / 6);
-      const e = k * k * (3 - 2 * k);
-      const dist = 34 - e * 25;
-      const h = 30 - e * 25;
-      desiredPos.set(c.x - fwd.x * dist, h, c.z - fwd.z * dist);
-      desiredTarget.addScaledVector(fwd, 4 * e);
-      rate = 3;
+      // it begins at home, flies over the roofs to where Dargato wakes, and settles behind him
+      const home = store.world.nodes[store.world.home];
+      const smooth = (v: number) => {
+        const x = Math.min(1, Math.max(0, v));
+        return x * x * (3 - 2 * x);
+      };
+      // home seen from a little way off: one slow turn around it, ending on the side facing Dargato
+      const a = Math.atan2(c.x - home.x, c.z - home.z) + Math.PI * 2 * smooth(phaseT / INTRO.home);
+      const homePos = new THREE.Vector3(home.x + Math.sin(a) * 16, 9, home.z + Math.cos(a) * 16);
+      const homeTarget = new THREE.Vector3(home.x, 2, home.z);
+      // high above and behind Dargato, then down to the walking view
+      const catHigh = new THREE.Vector3(c.x - fwd.x * 22, 20, c.z - fwd.z * 22);
+      const catTarget = desiredTarget.clone().addScaledVector(fwd, 4.5);
+      const catPos = new THREE.Vector3(c.x - fwd.x * 8.5, 4.6, c.z - fwd.z * 8.5);
+      const f = smooth((phaseT - INTRO.home) / INTRO.fly);
+      const g = smooth((phaseT - INTRO.home - INTRO.fly) / INTRO.settle);
+      desiredPos.lerpVectors(homePos, catHigh, f).lerp(catPos, g);
+      // the flight climbs early and stays high over the roofs (stacked pieces reach ~45 up)
+      desiredPos.y += Math.pow(Math.sin(f * Math.PI), 0.5) * 42;
+      desiredTarget.lerpVectors(homeTarget, catTarget, f);
+      if (!s.intro) {
+        // the tutorial covered the screen: cut straight to home
+        s.pos.copy(homePos);
+        s.target.copy(homeTarget);
+        s.intro = true;
+      }
+      rate = 6;
     } else if (phase === 'arrival' || (phase === 'summary' && snap.ending === 'home')) {
       const home = store.world.nodes[store.world.home];
       s.orbit += dt * 0.12;
@@ -149,7 +171,7 @@ export function Atmosphere({ world }: { world: World }) {
     const base = snap?.render.fog ?? 0.022;
     const phase = snap?.phase;
     // SIGHT: too bright and the glare fog thickens, too dark and the night closes in
-    const m = phase === 'lobby' ? 0.8 : phase === 'intro' ? 1.2 : phase === 'arrival' ? 0.6 : 1;
+    const m = phase === 'lobby' || phase === 'tutorial' ? 0.8 : phase === 'intro' ? 1.2 : phase === 'arrival' ? 0.6 : 1;
     const target = base * m * (1 + 4.5 * fx.glare + 0.6 * (1 - fx.light));
     tmp.density += (target - tmp.density) * (1 - Math.exp(-dt * 1.5));
     fog.density = tmp.density;

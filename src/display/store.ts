@@ -1,6 +1,7 @@
 // Mutable store shared by the 3D scene (read every frame, no React re-renders).
 import type { Snapshot } from '../../shared/protocol';
-import type { World, WorldEvent } from '../../shared/types';
+import type { CatInternals, World, WorldEvent } from '../../shared/types';
+import { INTRO } from '../../shared/config';
 import { lerpAngle } from '../../shared/graph';
 
 export interface CatView {
@@ -39,6 +40,11 @@ export const store = {
   },
 };
 
+/** 1 while his eyes are clear, fading to 0 when it is too dark or he is blinded */
+export function seesClearly(I: CatInternals): number {
+  return Math.min(1, Math.max(0, (I.light - 0.5) / 0.35)) * Math.min(1, Math.max(0, (0.4 - I.glare) / 0.25));
+}
+
 /** smooths the senses' effects once per frame; outside the journey they settle to calm values */
 export function updateFx(dt: number) {
   const s = store.latest;
@@ -46,15 +52,16 @@ export function updateFx(dt: number) {
   if (!s) return;
   const I = s.inner;
   const live = s.phase === 'journey' || s.phase === 'intro';
-  // in the lobby the senses can be tried, at half strength
-  const k = live ? 1 : s.phase === 'lobby' ? 0.5 : 0;
+  // in the lobby and the tutorial the senses can be tried, at half strength;
+  // in the intro they stay calm during the flight from home and come in as the camera reaches him
+  const settle = Math.min(1, Math.max(0, (s.phaseT - INTRO.home - INTRO.fly) / INTRO.settle));
+  const k = s.phase === 'intro' ? settle : live ? 1 : s.phase === 'lobby' || s.phase === 'tutorial' ? 0.5 : 0;
   const ease = (cur: number, target: number, rate: number) => cur + (target - cur) * (1 - Math.exp(-dt * rate));
   fx.light = ease(fx.light, 1 - (1 - I.light) * k, 3);
   fx.glare = ease(fx.glare, I.glare * k, 3);
   fx.disperse = ease(fx.disperse, (1 - I.cohesion) * k, 2.5);
   // the red way home only shows while his eyes are clear: too dark or blinded, he cannot see it
-  const sees = Math.min(1, Math.max(0, (I.light - 0.5) / 0.35)) * Math.min(1, Math.max(0, (0.4 - I.glare) / 0.25));
-  fx.red = ease(fx.red, I.instinct * k * sees, 3);
+  fx.red = ease(fx.red, I.instinct * k * seesClearly(I), 3);
   fx.steady = ease(fx.steady, live ? 1 - Math.min(1, Math.max(0, Math.abs(I.heart) - s.targets.heart) / 0.4) : 1, 4);
   fx.strain = ease(fx.strain, I.strain, 4);
   const ph = (((serverNow() / 1000) * s.heartBpm) / 60) % 1;

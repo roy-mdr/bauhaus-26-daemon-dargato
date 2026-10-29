@@ -1,6 +1,6 @@
-// One installation session: lobby -> intro -> journey -> arrival/sleep -> summary -> lobby.
+// One installation session: lobby -> tutorial -> intro -> journey -> arrival/sleep -> summary -> lobby.
 // Owns the authoritative simulation (cat, players, objectives).
-import { DEFAULT_CONFIG, clearBand, heartPosition, heartZone, senseCurves, type SessionConfig } from '../shared/config';
+import { DEFAULT_CONFIG, INTRO_SEC, clearBand, heartPosition, heartZone, senseCurves, type SessionConfig } from '../shared/config';
 import { clamp } from '../shared/graph';
 import type { DevInput, DirectorCommand, DirectorState, EndCause, JourneySummary, PhoneInput, PhoneState, PlayerPublic, SensorStatus, Snapshot } from '../shared/protocol';
 import { SENSE_ORDER, roleInfo } from '../shared/roles';
@@ -164,8 +164,17 @@ export class Session {
     return `${this.rng.pick(SEED_WORDS)}-${this.rng.int(100, 999)}`;
   }
 
+  /** the host's start: from the lobby to the tutorial (if on), from the tutorial into the journey */
+  advance() {
+    if (this.phase === 'lobby' && this.config.tutorial) {
+      this.setPhase('tutorial');
+      this.autoStartAt = 0;
+    } else this.start();
+  }
+
+  /** begins the journey right away (from the lobby or the tutorial) */
   start() {
-    if (this.phase !== 'lobby') return;
+    if (this.phase !== 'lobby' && this.phase !== 'tutorial') return;
     this.setPhase('intro');
     this.journeyT = 0;
     this.ending = null;
@@ -465,12 +474,15 @@ export class Session {
           const real = this.holders().length;
           if (this.config.autoStart && real >= this.config.autoStartMinPlayers) {
             if (!this.autoStartAt) this.autoStartAt = this.now + this.config.autoStartDelaySec * 1000;
-            if (this.now >= this.autoStartAt) this.start();
+            if (this.now >= this.autoStartAt) this.advance();
           } else this.autoStartAt = 0;
           break;
         }
+        case 'tutorial':
+          if (this.config.tutorialSec > 0 && this.phaseT >= this.config.tutorialSec) this.start();
+          break;
         case 'intro':
-          if (this.phaseT >= 6) {
+          if (this.phaseT >= INTRO_SEC) {
             this.setPhase('journey');
             this.cat.begin();
           }
@@ -610,6 +622,7 @@ export class Session {
       realPlayers: this.holders().length,
       render: { fog: this.config.fogDensity, light: this.config.lightIntensity, whispers: this.config.whispers, keyboard: this.config.displayKeyboard },
       autoStartIn: this.autoStartAt ? Math.max(0, Math.ceil((this.autoStartAt - this.now) / 1000)) : -1,
+      tutorialIn: this.phase === 'tutorial' && this.config.tutorialSec > 0 ? Math.max(0, Math.ceil(this.config.tutorialSec - this.phaseT)) : -1,
       ending: this.ending,
       endCause: this.endCause,
       summary: this.phase === 'summary' ? this.summary : null,
@@ -640,6 +653,7 @@ export class Session {
 
   private feedbackFor(p: Player): string {
     if (this.phase === 'lobby') return this.holders().length < 2 ? 'Try your sense while more players join...' : 'Try your sense. The journey begins soon.';
+    if (this.phase === 'tutorial') return 'Find your sense on the big screen and try it.';
     if (this.phase === 'intro') return 'Dargato wakes up.';
     if (this.phase === 'arrival') return 'Dargato is home.';
     if (this.phase === 'sleep' || this.phase === 'summary') return this.endCause ? ENDING_TEXT[this.endCause] : 'The journey is over.';
@@ -758,7 +772,7 @@ export class Session {
         }
         break;
       case 'ending':
-        if (this.phase === 'lobby') this.start();
+        this.advance();
         this.setPhase('journey');
         this.endJourney(cmd.kind === 'sleep' ? 'time' : 'home');
         break;
@@ -831,6 +845,8 @@ function sanitizeConfig(patch: Partial<SessionConfig>): Partial<SessionConfig> {
   if ('simulateMissing' in patch) set('simulateMissing', !!patch.simulateMissing);
   if ('simIntensity' in patch) set('simIntensity', num(patch.simIntensity, 0, 1));
   if ('reshuffleRoles' in patch) set('reshuffleRoles', !!patch.reshuffleRoles);
+  if ('tutorial' in patch) set('tutorial', !!patch.tutorial);
+  if ('tutorialSec' in patch) set('tutorialSec', num(patch.tutorialSec, 0, 600));
   if ('autoStart' in patch) set('autoStart', !!patch.autoStart);
   if ('autoStartDelaySec' in patch) set('autoStartDelaySec', num(patch.autoStartDelaySec, 5, 600));
   if ('autoStartMinPlayers' in patch) set('autoStartMinPlayers', num(patch.autoStartMinPlayers, 1, 16));
